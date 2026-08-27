@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import Collapsible from '@/components/Collapsible.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
+import BbsSelect from '@/components/BbsSelect.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { fetchModels, testChannel } from '@/api/client';
@@ -33,6 +34,21 @@ const navOptions: { value: NavPosition; label: string }[] = [
   { value: 'auto', label: '自动' },
   { value: 'top', label: '顶部' },
   { value: 'bottom', label: '底部' },
+];
+
+/**
+ * 思考强度候选:各家取值的并集,**不是**某一家的官方列表。
+ * auto 是显式选项(值为空串 = 不发送该参数),不是「留空」。
+ * 取值不做校验,原样发给端点(见 ApiChannel.reasoningEffort)。
+ */
+const REASONING_EFFORT_OPTIONS = [
+  { value: '', label: 'auto' },
+  { value: 'minimal', label: 'minimal' },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'xhigh', label: 'xhigh' },
+  { value: 'max', label: 'max' },
 ];
 
 /* —— 悬浮球自定义图标:选图 → 压缩上传到 ST 服务器 → 存路径串(跨设备同步) —— */
@@ -1737,7 +1753,18 @@ function exportPublicApiDocument() {
             <span>超时(秒)</span>
             <input v-model.number="editingChannel.timeoutSec" class="bbs-input" type="number" step="10" min="1" />
           </label>
+          <!-- 思考强度:自绘下拉(跟随主题;原生 select 的弹出层由系统渲染,主题管不到)。
+               auto 是显式选项,值为空串 = 不发送该参数 -->
+          <div class="bbs-mini-field">
+            <span>思考强度</span>
+            <BbsSelect
+              v-model="editingChannel.reasoningEffort"
+              :options="REASONING_EFFORT_OPTIONS"
+              aria-label="思考强度"
+            />
+          </div>
         </div>
+        <span class="bbs-field-hint">思考强度不知道的就选 auto，DS 系推荐 max</span>
         <label class="bbs-switch-row">
           <span class="bbs-modal-label">流式传输</span>
           <input v-model="editingChannel.stream" type="checkbox" class="bbs-checkbox" />
@@ -2385,7 +2412,8 @@ function exportPublicApiDocument() {
   border-color: var(--bbs-accent);
 }
 .bbs-channel-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
   gap: 10px;
 }
 .bbs-mini-field {
@@ -3114,6 +3142,10 @@ function exportPublicApiDocument() {
 
 /* ============ 移动端:折叠区内部正文整体收一号,与窄屏标题节奏统一 ============ */
 @media (max-width: 640px) {
+  /* 渠道参数四连:窄屏一行四个每个只剩几十 px,落成 2×2 */
+  .bbs-channel-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
   .bbs-field-label,
   .bbs-channel-item-name {
     font-size: 13px;

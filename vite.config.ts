@@ -1,7 +1,7 @@
 import vue from '@vitejs/plugin-vue';
 import fs from 'node:fs';
 import path from 'node:path';
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 
 // 浏览器从 /scripts/extensions/third-party/ST-BaiBai-Book/dist/index.js 加载,
 // 想 import 宿主 ST 的模块时需要算出从 dist/ 回到 ST public/ 根的相对路径。
@@ -55,6 +55,13 @@ export default defineConfig(({ mode }) => ({
     alias: {
       '@': path.resolve(__dirname, 'src'),
     },
+  },
+
+  test: {
+    // 只跑本项目的测试:根目录的 .pnpm-store(本地虚拟商店,gitignore)里存着
+    // 其它 workspace 项目的源码,默认 glob 会扫进去产生无关失败。
+    include: ['src/**/*.test.ts'],
+    exclude: ['node_modules/**', '.pnpm-store/**'],
   },
 
   build: {
