@@ -1591,12 +1591,12 @@ function exportPublicApiDocument() {
       <!-- 从旧版 Horae 迁移 -->
       <Collapsible title="从旧版 Horae 迁移" :open="false">
         <p class="bbs-field-hint">
-          把当前聊天里旧版 Horae 的摘要、物品、计划迁移过来。需要迁移的聊天各点一次,不会动 Horae 原数据。
+          把当前聊天里旧版 Horae 的摘要、物品、计划、关系网络迁移过来。需要迁移的聊天各点一次,不会动 Horae 原数据。
         </p>
         <div v-if="migratePlan" class="bbs-field-hint">
           <template v-if="migratePlan.hasData">
             检测到:可建摘要 {{ migratePlan.leafFloors }} 层 / 旧总结 {{ migratePlan.summaryCount }} 条 /
-            物品 {{ migratePlan.itemCount }} / 计划悬念 {{ migratePlan.planCount }}。
+            物品 {{ migratePlan.itemCount }} / 计划悬念 {{ migratePlan.planCount }} / 关系 {{ migratePlan.relationshipCount }}。
             <span v-if="migratePlan.willOverwrite">⚠️ 当前聊天已有本插件数据,迁移将覆盖。</span>
           </template>
           <template v-else>未在当前聊天检测到 Horae 旧数据(请先进入含旧数据的聊天)。</template>

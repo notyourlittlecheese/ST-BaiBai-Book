@@ -14,7 +14,8 @@
  *    递归 flatten,depth→level,childIds 由「直接子条目 + 范围内未被子条目覆盖的叶子」重建。
  *  - 物品/计划是 Horae 的**逐层快照**(非增量),按楼序折叠出最终态,整包作为 add-delta 挂到
  *    最后一片叶子(避免逐层重放重复累加)。
- *  - 弃掉柏宝书没有的:affection / npcs / costumes / mood / relationships / RPG / customTables。
+ *  - Horae relationships → 柏宝书 NPC 台账:涉及主角的写 relation,NPC 之间的写 ties。
+ *  - 弃掉柏宝书没有的:affection / costumes / mood / RPG / customTables。
  */
 
 import { getContext, type STMessage } from '@/st/context';
@@ -48,6 +49,12 @@ interface HoraeAgendaItem {
   text?: string;
   done?: boolean;
 }
+interface HoraeRelationship {
+  from?: string;
+  to?: string;
+  type?: string;
+  note?: string;
+}
 interface HoraeSummaryEntry {
   id?: string;
   range?: [number, number];
@@ -69,6 +76,7 @@ interface HoraeMeta {
   _deletedAgendaTexts?: string[];
   _skipHorae?: boolean;
   autoSummaries?: HoraeSummaryEntry[];
+  relationships?: HoraeRelationship[];
 }
 
 /* ============ 小工具 ============ */
@@ -133,6 +141,8 @@ export interface MigrationPlan {
   itemCount: number;
   /** 未了结计划/悬念数 */
   planCount: number;
+  /** 最终关系网络条数 */
+  relationshipCount: number;
   /** 当前柏宝书是否已有森林数据(将被覆盖) */
   willOverwrite: boolean;
 }
@@ -208,6 +218,78 @@ function foldOpenPlans(chat: STMessage[]): StoredDelta['plans'] {
   return add.length ? { add } : undefined;
 }
 
+function cleanRelText(s: unknown): string {
+  return String(s ?? '').trim();
+}
+
+function isUserName(name: string, userName: string): boolean {
+  const n = name.trim();
+  return n === userName || n === '{{user}}' || n === '<user>' || n.toLowerCase() === 'user';
+}
+
+function relationshipText(rel: HoraeRelationship): string {
+  const type = cleanRelText(rel.type);
+  const note = cleanRelText(rel.note);
+  return note ? `${type}(${note})` : type;
+}
+
+/** 把 Horae 关系网络折成柏宝书 NPC 增量。主角关系进 relation,NPC 间关系进 ties。 */
+function foldRelationshipNpcs(chat: STMessage[], userName: string): NonNullable<StoredDelta['npcs']>['update'] {
+  const byKey = new Map<string, HoraeRelationship>();
+  const keyOf = (from: string, to: string) => `${from.trim().toLowerCase()}\u0000${to.trim().toLowerCase()}`;
+
+  for (const m of chat) {
+    const meta = horaeMeta(m);
+    if (!meta || meta._skipHorae) continue;
+    for (const rel of meta.relationships ?? []) {
+      const from = cleanRelText(rel.from);
+      const to = cleanRelText(rel.to);
+      const type = cleanRelText(rel.type);
+      if (!from || !to || !type) continue;
+      byKey.set(keyOf(from, to), { from, to, type, note: cleanRelText(rel.note) });
+    }
+  }
+
+  const out = new Map<string, { name: string; relation?: string; ties: string[] }>();
+  const ensure = (name: string) => {
+    const k = name.trim().toLowerCase();
+    let entry = out.get(k);
+    if (!entry) {
+      entry = { name: name.trim(), ties: [] };
+      out.set(k, entry);
+    }
+    return entry;
+  };
+  const addTie = (name: string, text: string) => {
+    const entry = ensure(name);
+    if (!entry.ties.includes(text)) entry.ties.push(text);
+  };
+
+  for (const rel of byKey.values()) {
+    const from = cleanRelText(rel.from);
+    const to = cleanRelText(rel.to);
+    const text = relationshipText(rel);
+    if (!from || !to || !text) continue;
+
+    const fromIsUser = isUserName(from, userName);
+    const toIsUser = isUserName(to, userName);
+    if (fromIsUser && !toIsUser) {
+      ensure(to).relation = `与主角:${text}`;
+    } else if (toIsUser && !fromIsUser) {
+      ensure(from).relation = `对主角:${text}`;
+    } else if (!fromIsUser && !toIsUser) {
+      addTie(from, `对${to}:${text}`);
+      addTie(to, `${from}对其:${text}`);
+    }
+  }
+
+  return [...out.values()].map(entry => ({
+    name: entry.name,
+    relation: entry.relation,
+    ties: entry.ties.length ? entry.ties.join('; ') : undefined,
+  })).filter(n => n.relation || n.ties);
+}
+
 /** 递归 flatten Horae autoSummaries(嵌套 mergedSummaries),返回 [条目, 父id]。 */
 function flattenHoraeSummaries(
   tops: HoraeSummaryEntry[],
@@ -238,9 +320,10 @@ export function computeMigrationPlan(): MigrationPlan {
 
   const items = foldFinalItems(chat);
   const plans = foldOpenPlans(chat);
+  const relationships = foldRelationshipNpcs(chat, getContext()?.name1 ?? '');
 
   const hasData =
-    leafFloors > 0 || summaryCount > 0 || items.length > 0 || !!plans?.add?.length;
+    leafFloors > 0 || summaryCount > 0 || items.length > 0 || !!plans?.add?.length || relationships.length > 0;
 
   return {
     hasData,
@@ -248,6 +331,7 @@ export function computeMigrationPlan(): MigrationPlan {
     summaryCount,
     itemCount: items.length,
     planCount: plans?.add?.length ?? 0,
+    relationshipCount: relationships.length,
     willOverwrite: memory.summaries.length > 0 || hasAnyLeaf(chat),
   };
 }
@@ -332,6 +416,7 @@ export async function runHoraeMigration(): Promise<boolean> {
     // 若没有任何叙事叶子但有状态,造一条空文本叶子挂到最后一个 AI 楼承载它。
     const items = foldFinalItems(chat);
     const plans = foldOpenPlans(chat);
+    const relationshipNpcs = foldRelationshipNpcs(chat, ctx.name1 ?? '');
     const finalState = computeFinalState(chat);
 
     if (lastLeafFloor < 0 && aiFloors.length) {
@@ -356,6 +441,7 @@ export async function runHoraeMigration(): Promise<boolean> {
       const delta: StoredDelta = seedLeaf.delta ?? (seedLeaf.delta = {});
       if (items.length) delta.items = { add: items };
       if (plans) delta.plans = plans;
+      if (relationshipNpcs.length) delta.npcs = { ...(delta.npcs ?? {}), update: relationshipNpcs };
       if (finalState.time) delta.time = finalState.time;
       if (finalState.location) delta.location = finalState.location;
     }
@@ -420,7 +506,7 @@ export async function runHoraeMigration(): Promise<boolean> {
     await syncHiddenNow();
 
     toast(
-      `迁移完成:叶子 ${leafIdByFloor.size} 片 / 总结 ${newSummaries.length} 条 / 物品 ${items.length} / 计划 ${plans?.add?.length ?? 0}`,
+      `迁移完成:叶子 ${leafIdByFloor.size} 片 / 总结 ${newSummaries.length} 条 / 物品 ${items.length} / 计划 ${plans?.add?.length ?? 0} / 关系 ${relationshipNpcs.length}`,
       'success',
     );
     return true;
