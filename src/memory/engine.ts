@@ -741,6 +741,32 @@ export async function setFloorOmit(floor: number, on: boolean): Promise<void> {
   scheduleLeafFlush();
 }
 
+/** 批量标记番外。用于把一段已确认不进主线的未摘要楼一次性排除,不调用 API。 */
+export async function setFloorsOmit(floors: number[], on: boolean): Promise<number> {
+  const ctx = getContext();
+  if (!ctx) return 0;
+  const chat = ctx.chat ?? [];
+  let changed = 0;
+  for (const floor of floors) {
+    const m = chat[floor];
+    if (!m) continue;
+    const already = !!m.extra?.bbs_omit;
+    if (already === on) continue;
+    if (on) {
+      m.extra = { ...(m.extra ?? {}), bbs_omit: true };
+    } else {
+      const { bbs_omit: _omit, ...rest } = m.extra ?? {};
+      m.extra = rest;
+    }
+    changed++;
+  }
+  if (!changed) return 0;
+  recomputeDerived();
+  await syncHiddenNow();
+  scheduleLeafFlush();
+  return changed;
+}
+
 /**
  * 自动触发的单楼摘要:**最早待摘优先**,一次最多处理一楼。
  * @param skipLastAi true 时跳过正在操作的末尾 AI 消息(翻页/重新生成场景),它不参与目标选取。

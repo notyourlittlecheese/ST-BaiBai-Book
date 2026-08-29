@@ -4,7 +4,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { addSummary, appendOpToLatestLeaf, deleteLeafAt, deleteSummary, deleteSummarySubtrees, editLeafAt, editPlan, editSummary, invalidateSummaryAncestors } from '@/memory/apply';
 import { apiSettings } from '@/api/settings';
-import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, isAiFloor, resummarizeNow, setFloorOmit, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
+import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, isAiFloor, resummarizeNow, setFloorOmit, setFloorsOmit, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
 import { estimateInjectionTokenBreakdown, refreshInjection, selectViewNodes, type ViewNode } from '@/memory/inject';
 import { compactTimeLabel, formatRange, splitTimeLabel } from '@/memory/timeTag';
 import { relativeTimeLabel, weekdayLabel } from '@/memory/timeRel';
@@ -233,6 +233,7 @@ function summarizeOne(floor: number) {
  * 运行状态读 engine 的 batchState 单例(非组件本地 ref):关掉柏宝书窗口再重开,
  * 进度条与取消按钮能恢复——因为任务在 engine 里继续跑,关窗不取消。 */
 const batchConfirmOpen = ref(false);
+const omitPendingConfirmOpen = ref(false);
 
 function openBatchConfirm() {
   if (engineState.running || !pendingFloors.value.length) return;
@@ -246,6 +247,12 @@ function runBatchBackfill() {
     // 由旧到新补;pendingFloors 是倒序展示用,这里传升序更稳(引擎内部也会再过滤排序)
     floors: [...derivedMeta.pendingFloors].sort((a, b) => a - b),
   });
+}
+async function omitAllPending() {
+  omitPendingConfirmOpen.value = false;
+  if (engineState.running || batchState.running || !derivedMeta.pendingFloors.length) return;
+  const changed = await setFloorsOmit([...derivedMeta.pendingFloors], true);
+  if (changed) toast(`已将 ${changed} 个未摘要楼层标为不计入记忆`, 'success');
 }
 
 /* ============ 立即总结 ============
@@ -1055,6 +1062,16 @@ provide(SUMMARY_CTX, {
           class="bbs-btn bbs-btn-sm bbs-batch-btn"
           type="button"
           :disabled="engineState.running || summarizingFloor !== null"
+          title="把当前未摘要楼层全部标为番外/不计入记忆,不调用 API"
+          @click="omitPendingConfirmOpen = true"
+        >
+          <Icon name="eye-off" />全部不计入
+        </button>
+        <button
+          v-if="!batchState.running"
+          class="bbs-btn bbs-btn-sm bbs-batch-btn"
+          type="button"
+          :disabled="engineState.running || summarizingFloor !== null"
           title="把全部未摘楼层分批一次性补完(比逐楼省 token、更快)"
           @click="openBatchConfirm"
         >
@@ -1093,6 +1110,14 @@ provide(SUMMARY_CTX, {
     >
       共 {{ pendingFloors.length }} 个未摘楼层,将按内容量分批、逐批串行补摘(比逐楼省 token、更快)。
       过程中可随时取消(会在当前这批完成后停下)。继续?
+    </ConfirmDialog>
+    <ConfirmDialog
+      v-model:open="omitPendingConfirmOpen"
+      title="全部不计入记忆"
+      confirmText="全部标为番外"
+      @confirm="omitAllPending"
+    >
+      共 {{ pendingFloors.length }} 个未摘楼层,将全部标为番外/不计入记忆。此操作不调用 API,也不删除已有摘要;之后可在对应楼层或摘要总览里单独恢复。
     </ConfirmDialog>
 
     <!-- 当前状态 -->

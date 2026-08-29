@@ -14,13 +14,14 @@
  *    递归 flatten,depth→level,childIds 由「直接子条目 + 范围内未被子条目覆盖的叶子」重建。
  *  - 物品/计划是 Horae 的**逐层快照**(非增量),按楼序折叠出最终态,整包作为 add-delta 挂到
  *    最后一片叶子(避免逐层重放重复累加)。
+ *  - Horae 番外/小剧场 `_skipHorae` → 柏宝书 `extra.bbs_omit`,继续排除在主线记忆外。
  *  - Horae relationships → 柏宝书 NPC 台账:涉及主角的写 relation,NPC 之间的写 ties。
  *  - 弃掉柏宝书没有的:affection / costumes / mood / RPG / customTables。
  */
 
 import { getContext, type STMessage } from '@/st/context';
 import { toast } from '@/st/toast';
-import { isAiFloor, syncHiddenNow } from './engine';
+import { isAiFloor, isRealAiReply, syncHiddenNow } from './engine';
 import { makeLeafId } from './apply';
 import { flushLeavesNow, memory, recomputeDerived, saveMemory } from './store';
 import type { ItemDelta, LeafExtra, MemSummary, StoredDelta } from './types';
@@ -143,6 +144,8 @@ export interface MigrationPlan {
   planCount: number;
   /** 最终关系网络条数 */
   relationshipCount: number;
+  /** Horae 已标番外/小剧场的 AI 楼数 */
+  sideplayCount: number;
   /** 当前柏宝书是否已有森林数据(将被覆盖) */
   willOverwrite: boolean;
 }
@@ -310,9 +313,15 @@ export function computeMigrationPlan(): MigrationPlan {
   const chat = ctx?.getCurrentChatId?.() ? ctx?.chat ?? [] : [];
 
   let leafFloors = 0;
+  let sideplayCount = 0;
   for (let i = 0; i < chat.length; i++) {
+    const meta = horaeMeta(chat[i]);
+    if (meta?._skipHorae && isRealAiReply(chat[i])) {
+      sideplayCount++;
+      continue;
+    }
     if (!isAiFloor(chat[i])) continue;
-    if (narrativeOf(horaeMeta(chat[i]))) leafFloors++;
+    if (narrativeOf(meta)) leafFloors++;
   }
 
   const tops = (chat[0] && horaeMeta(chat[0])?.autoSummaries) || [];
@@ -332,6 +341,7 @@ export function computeMigrationPlan(): MigrationPlan {
     itemCount: items.length,
     planCount: plans?.add?.length ?? 0,
     relationshipCount: relationships.length,
+    sideplayCount,
     willOverwrite: memory.summaries.length > 0 || hasAnyLeaf(chat),
   };
 }
@@ -370,6 +380,16 @@ export async function runHoraeMigration(): Promise<boolean> {
   }
 
   try {
+    // Horae 番外/小剧场语义等价于柏宝书番外:先同步标记,后续建叶/压缩自然跳过。
+    let sideplayMarked = 0;
+    for (const m of chat) {
+      const meta = horaeMeta(m);
+      if (!meta?._skipHorae || !isRealAiReply(m)) continue;
+      if (m.extra?.bbs_omit === true) continue;
+      m.extra = { ...(m.extra ?? {}), bbs_omit: true };
+      sideplayMarked++;
+    }
+
     // ===== 1. 为每个有叙事的 AI 楼造叶子(时间点→时间段) =====
     // aiFloors:按楼序的 AI 楼索引;每层 timeEnd=本层时间点,timeStart=上一层时间点。
     const aiFloors: number[] = [];
@@ -506,7 +526,7 @@ export async function runHoraeMigration(): Promise<boolean> {
     await syncHiddenNow();
 
     toast(
-      `迁移完成:叶子 ${leafIdByFloor.size} 片 / 总结 ${newSummaries.length} 条 / 物品 ${items.length} / 计划 ${plans?.add?.length ?? 0} / 关系 ${relationshipNpcs.length}`,
+      `迁移完成:叶子 ${leafIdByFloor.size} 片 / 总结 ${newSummaries.length} 条 / 物品 ${items.length} / 计划 ${plans?.add?.length ?? 0} / 关系 ${relationshipNpcs.length} / 番外 ${sideplayMarked}`,
       'success',
     );
     return true;
