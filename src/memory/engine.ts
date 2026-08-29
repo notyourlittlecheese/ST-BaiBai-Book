@@ -1,6 +1,6 @@
 import type { ChatMsg } from '@/api/client';
 import { mainApiAvailable, requestCompletion, requestViaMainApi } from '@/api/client';
-import { apiSettings, engineActiveHere, getChannelForTask } from '@/api/settings';
+import { apiSettings, engineActiveHere, getChannelsForTask } from '@/api/settings';
 import type { TaskType } from '@/api/settings';
 import type { STMessage, WorldInfoEntry } from '@/st/context';
 import { getContext, getCheckWorldInfo, getEjsTemplate, setMessageText } from '@/st/context';
@@ -971,16 +971,32 @@ async function syncWindowHiddenState(chat: STMessage[]): Promise<void> {
  */
 /**
  * 解析某摘要任务实际怎么发请求:
- *  - 指派了副 API 渠道 → 用该渠道(requestCompletion);
+ *  - 指派了副 API 渠道池 → 按顺序尝试每个渠道(requestCompletion),失败自动换下一个;
  *  - 未指派(空)→ 跟随主 API(requestViaMainApi → generateRaw,用主界面当前在用的 API,不带聊天历史)。
  * 主 API 也不可用(ST 无 generateRaw)时返回 error,调用方据此早退并写 lastError。
  */
 function resolveSender(
   task: TaskType,
 ): { send: (messages: ChatMsg[]) => Promise<string>; label: string } | { error: string } {
-  const channel = getChannelForTask(task);
-  if (channel) {
-    return { send: messages => requestCompletion(channel, messages), label: `渠道「${channel.name}」(${channel.model})` };
+  const channels = getChannelsForTask(task);
+  if (channels.length) {
+    const labels = channels.map(channel => `「${channel.name}」(${channel.model})`);
+    return {
+      label: channels.length === 1 ? `渠道${labels[0]}` : `渠道池${labels.join(' → ')}`,
+      send: async messages => {
+        const errors: string[] = [];
+        for (const channel of channels) {
+          try {
+            return await requestCompletion(channel, messages);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            errors.push(`${channel.name}: ${msg}`);
+            console.warn(`[柏宝书] ${task} 渠道失败,尝试下一个:`, channel.name, msg);
+          }
+        }
+        throw new Error(`所有${task === 'summary' ? '摘要' : '总结'}渠道均失败: ${errors.join(' / ')}`);
+      },
+    };
   }
   if (!mainApiAvailable()) {
     return { error: '未指派副 API 渠道,且当前主 API 不可用(请填好主 API 后重试,或为本任务单独指派渠道)' };

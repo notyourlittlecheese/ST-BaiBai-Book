@@ -5,7 +5,7 @@ import BbsSelect from '@/components/BbsSelect.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { fetchModels, testChannel } from '@/api/client';
-import { apiSettings, newChannel, resolveVectorModel, sanitizeTagName, type ApiChannel } from '@/api/settings';
+import { apiSettings, newChannel, resolveVectorModel, sanitizeTagName, type ApiChannel, type TaskType } from '@/api/settings';
 import { getContext } from '@/st/context';
 import {
   JAILBREAK_PROMPT,
@@ -150,6 +150,35 @@ function confirmChannel() {
   editingId.value = null;
   editingChannel.value = null;
 }
+
+function taskPool(task: TaskType): string[] {
+  return apiSettings.assignmentPools[task];
+}
+function taskPoolHas(task: TaskType, id: string): boolean {
+  return taskPool(task).includes(id);
+}
+function setTaskPoolHas(task: TaskType, id: string, on: boolean) {
+  const pool = taskPool(task);
+  const idx = pool.indexOf(id);
+  if (on && idx < 0) pool.push(id);
+  if (!on && idx >= 0) pool.splice(idx, 1);
+  apiSettings.assignments[task] = pool[0] ?? '';
+}
+function moveTaskPool(task: TaskType, id: string, dir: -1 | 1) {
+  const pool = taskPool(task);
+  const idx = pool.indexOf(id);
+  const next = idx + dir;
+  if (idx < 0 || next < 0 || next >= pool.length) return;
+  const [item] = pool.splice(idx, 1);
+  pool.splice(next, 0, item);
+  apiSettings.assignments[task] = pool[0] ?? '';
+}
+function taskPoolRank(task: TaskType, id: string): number {
+  return taskPool(task).indexOf(id) + 1;
+}
+function checkedFromEvent(e: Event): boolean {
+  return (e.target as HTMLInputElement | null)?.checked === true;
+}
 // 删除渠道前的二次确认:点删除先开确认弹窗,确认后才真正删。
 const confirmDeleteOpen = ref(false);
 function askRemoveChannel() {
@@ -171,6 +200,8 @@ function removeChannel(id: string) {
   if (scope === 'api') {
     if (apiSettings.assignments.summary === id) apiSettings.assignments.summary = '';
     if (apiSettings.assignments.resummary === id) apiSettings.assignments.resummary = '';
+    apiSettings.assignmentPools.summary = apiSettings.assignmentPools.summary.filter(x => x !== id);
+    apiSettings.assignmentPools.resummary = apiSettings.assignmentPools.resummary.filter(x => x !== id);
   }
 }
 
@@ -890,22 +921,64 @@ function exportPublicApiDocument() {
       <Collapsible title="副 API" :open="false">
         <!-- 任务指派 -->
         <div class="bbs-field bbs-assign">
-          <label class="bbs-assign-row">
-            <span class="bbs-field-label">摘要使用</span>
-            <select v-model="apiSettings.assignments.summary" class="bbs-input bbs-select">
-              <option value="">跟随主 API</option>
-              <option v-for="c in apiSettings.channels" :key="c.id" :value="c.id">{{ c.name }}</option>
-            </select>
-          </label>
-          <label class="bbs-assign-row">
-            <span class="bbs-field-label">总结使用</span>
-            <select v-model="apiSettings.assignments.resummary" class="bbs-input bbs-select">
-              <option value="">跟随主 API</option>
-              <option v-for="c in apiSettings.channels" :key="c.id" :value="c.id">{{ c.name }}</option>
-            </select>
-          </label>
+          <div class="bbs-assign-card">
+            <div class="bbs-assign-title">
+              <span class="bbs-field-label">摘要使用</span>
+              <span class="bbs-field-hint">{{ apiSettings.assignmentPools.summary.length ? `按顺序尝试 ${apiSettings.assignmentPools.summary.length} 个渠道` : '跟随主 API' }}</span>
+            </div>
+            <div v-if="apiSettings.channels.length" class="bbs-pool-list">
+              <label v-for="c in apiSettings.channels" :key="`sum-${c.id}`" class="bbs-pool-row">
+                <input
+                  class="bbs-checkbox"
+                  type="checkbox"
+                  :checked="taskPoolHas('summary', c.id)"
+                  @change="setTaskPoolHas('summary', c.id, checkedFromEvent($event))"
+                />
+                <span class="bbs-pool-main">
+                  <span class="bbs-pool-name">{{ c.name }}</span>
+                  <span class="bbs-pool-model">{{ c.model }}</span>
+                </span>
+                <span v-if="taskPoolHas('summary', c.id)" class="bbs-pool-rank">#{{ taskPoolRank('summary', c.id) }}</span>
+                <button class="bbs-icon-btn" type="button" title="上移" :disabled="taskPoolRank('summary', c.id) <= 1" @click.prevent="moveTaskPool('summary', c.id, -1)">
+                  <Icon name="chevron" class="is-up" />
+                </button>
+                <button class="bbs-icon-btn" type="button" title="下移" :disabled="!taskPoolHas('summary', c.id) || taskPoolRank('summary', c.id) >= apiSettings.assignmentPools.summary.length" @click.prevent="moveTaskPool('summary', c.id, 1)">
+                  <Icon name="chevron" />
+                </button>
+              </label>
+            </div>
+            <p v-else class="bbs-field-hint">还没有副 API 渠道;会跟随主 API。</p>
+          </div>
+          <div class="bbs-assign-card">
+            <div class="bbs-assign-title">
+              <span class="bbs-field-label">总结使用</span>
+              <span class="bbs-field-hint">{{ apiSettings.assignmentPools.resummary.length ? `按顺序尝试 ${apiSettings.assignmentPools.resummary.length} 个渠道` : '跟随主 API' }}</span>
+            </div>
+            <div v-if="apiSettings.channels.length" class="bbs-pool-list">
+              <label v-for="c in apiSettings.channels" :key="`resum-${c.id}`" class="bbs-pool-row">
+                <input
+                  class="bbs-checkbox"
+                  type="checkbox"
+                  :checked="taskPoolHas('resummary', c.id)"
+                  @change="setTaskPoolHas('resummary', c.id, checkedFromEvent($event))"
+                />
+                <span class="bbs-pool-main">
+                  <span class="bbs-pool-name">{{ c.name }}</span>
+                  <span class="bbs-pool-model">{{ c.model }}</span>
+                </span>
+                <span v-if="taskPoolHas('resummary', c.id)" class="bbs-pool-rank">#{{ taskPoolRank('resummary', c.id) }}</span>
+                <button class="bbs-icon-btn" type="button" title="上移" :disabled="taskPoolRank('resummary', c.id) <= 1" @click.prevent="moveTaskPool('resummary', c.id, -1)">
+                  <Icon name="chevron" class="is-up" />
+                </button>
+                <button class="bbs-icon-btn" type="button" title="下移" :disabled="!taskPoolHas('resummary', c.id) || taskPoolRank('resummary', c.id) >= apiSettings.assignmentPools.resummary.length" @click.prevent="moveTaskPool('resummary', c.id, 1)">
+                  <Icon name="chevron" />
+                </button>
+              </label>
+            </div>
+            <p v-else class="bbs-field-hint">还没有副 API 渠道;会跟随主 API。</p>
+          </div>
         </div>
-        <p class="bbs-field-hint">不指派渠道时跟随主 API:直接借用你主界面当前正在用的 API(聊天补全/文本补全)执行摘要,无需额外配置。想用不同模型再在下方建副渠道指派。</p>
+        <p class="bbs-field-hint">不选择候补渠道时跟随主 API。选择多个时会按 #1 → #2 → #3 顺序尝试;某个渠道请求/解析重试后仍失败,才自动切到下一个。</p>
 
         <hr class="bbs-rule" />
 
@@ -2168,13 +2241,76 @@ function exportPublicApiDocument() {
 .bbs-assign {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
-.bbs-assign-row {
+.bbs-assign-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--bbs-line);
+  border-radius: var(--bbs-radius-sm);
+  background: var(--bbs-surface-soft);
+}
+.bbs-assign-title,
+.bbs-pool-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
+}
+.bbs-pool-list {
+  display: grid;
+  gap: 6px;
+}
+.bbs-pool-row {
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 1px solid var(--bbs-line);
+  border-radius: var(--bbs-radius-sm);
+  background: var(--bbs-surface);
+}
+.bbs-pool-main {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+.bbs-pool-name,
+.bbs-pool-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bbs-pool-name {
+  color: var(--bbs-ink);
+  font-size: 12px;
+}
+.bbs-pool-model {
+  color: var(--bbs-ink-soft);
+  font-size: 11px;
+}
+.bbs-pool-rank {
+  min-width: 28px;
+  color: var(--bbs-accent);
+  font-size: 12px;
+  text-align: center;
+}
+.bbs-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--bbs-line);
+  border-radius: var(--bbs-radius-sm);
+  background: var(--bbs-surface);
+  color: var(--bbs-ink-soft);
+  cursor: pointer;
+}
+.bbs-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.bbs-icon-btn .is-up {
+  transform: rotate(180deg);
 }
 .bbs-select {
   max-width: 60%;

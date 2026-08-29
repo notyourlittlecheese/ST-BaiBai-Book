@@ -195,8 +195,10 @@ export interface ApiSettings {
   /** 向量记忆配置 */
   vector: VectorSettings;
   channels: ApiChannel[];
-  /** 各任务指派的渠道 id */
+  /** 各任务指派的主渠道 id。保留用于兼容旧配置;新配置优先使用 assignmentPools。 */
   assignments: Record<TaskType, string>;
+  /** 各任务的副 API 候补池,按数组顺序尝试;空数组=跟随 assignments/主 API。 */
+  assignmentPools: Record<TaskType, string[]>;
   /** 自动摘要开关。开启后自动生成摘要/总结,并启用正文时间标签与积压拦截。 */
   autoSummaryEnabled: boolean;
   /** 自动管理楼层隐藏。关闭后仍摘要/总结/向量,但不改 ST 消息隐藏状态。 */
@@ -348,6 +350,7 @@ function defaults(): ApiSettings {
     },
     channels: [],
     assignments: { summary: '', resummary: '' },
+    assignmentPools: { summary: [], resummary: [] },
     autoSummaryEnabled: true,
     autoHideEnabled: true,
     summaryOnlyMode: false,
@@ -462,6 +465,20 @@ function normalize(raw: unknown): ApiSettings {
       : 8192;
   // 副 API 渠道:逐个补全新加的字段(老数据没有 timeoutSec/stream/excludeParams),并校验类型
   merged.channels = (Array.isArray(merged.channels) ? merged.channels : []).map(normalizeChannel);
+  const channelIds = new Set(merged.channels.map(c => c.id));
+  const rawAssignments = ((raw as Partial<ApiSettings>).assignments ?? {}) as Partial<Record<TaskType, unknown>>;
+  merged.assignments = {
+    summary: typeof rawAssignments.summary === 'string' && channelIds.has(rawAssignments.summary) ? rawAssignments.summary : '',
+    resummary: typeof rawAssignments.resummary === 'string' && channelIds.has(rawAssignments.resummary) ? rawAssignments.resummary : '',
+  };
+  const rawPools = ((raw as Partial<ApiSettings>).assignmentPools ?? {}) as Partial<Record<TaskType, unknown>>;
+  const normalizePool = (task: TaskType): string[] => {
+    const arr = Array.isArray(rawPools[task]) ? rawPools[task] : [];
+    const ids = arr.filter((x): x is string => typeof x === 'string' && channelIds.has(x));
+    if (!ids.length && merged.assignments[task]) ids.push(merged.assignments[task]);
+    return Array.from(new Set(ids));
+  };
+  merged.assignmentPools = { summary: normalizePool('summary'), resummary: normalizePool('resummary') };
   // 字数档位:仅两个合法值,旧数据缺失/非法回退详细(= 老用户行为不变)
   merged.verbosity = merged.verbosity === 'concise' ? 'concise' : 'detailed';
   // 叶子层保留条数:非负整数,缺失/非法回退默认 3(0=旧行为攒够即全压)
@@ -608,6 +625,7 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.vector = src.vector;
   target.channels = src.channels;
   target.assignments = src.assignments;
+  target.assignmentPools = src.assignmentPools;
   target.autoSummaryEnabled = src.autoSummaryEnabled;
   target.autoHideEnabled = src.autoHideEnabled;
   target.summaryOnlyMode = src.summaryOnlyMode;
@@ -684,6 +702,8 @@ function applySharedChannels(store: SharedChannelsStore): void {
   if (apiSettings.assignments.resummary && !ids.has(apiSettings.assignments.resummary)) {
     apiSettings.assignments.resummary = '';
   }
+  apiSettings.assignmentPools.summary = apiSettings.assignmentPools.summary.filter(id => ids.has(id));
+  apiSettings.assignmentPools.resummary = apiSettings.assignmentPools.resummary.filter(id => ids.has(id));
 }
 
 function bindSharedChannelsListener(): void {
@@ -993,6 +1013,24 @@ export function getChannelForTask(task: TaskType): ApiChannel | null {
   const id = apiSettings.assignments[task];
   if (!id) return null;
   return apiSettings.channels.find(c => c.id === id) ?? null;
+}
+
+export function getChannelsForTask(task: TaskType): ApiChannel[] {
+  const ids = apiSettings.assignmentPools[task]?.length
+    ? apiSettings.assignmentPools[task]
+    : apiSettings.assignments[task]
+      ? [apiSettings.assignments[task]]
+      : [];
+  const seen = new Set<string>();
+  const out: ApiChannel[] = [];
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    const channel = apiSettings.channels.find(c => c.id === id);
+    if (!channel) continue;
+    seen.add(id);
+    out.push(channel);
+  }
+  return out;
 }
 
 /**
