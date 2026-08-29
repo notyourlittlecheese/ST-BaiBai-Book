@@ -934,7 +934,12 @@ function exportPublicApiDocument() {
           <span class="bbs-field-label">启用自动摘要</span>
           <input v-model="apiSettings.autoSummaryEnabled" type="checkbox" class="bbs-checkbox" />
         </label>
-        <p class="bbs-field-hint">开启后自动摘要并隐藏旧楼,同时启用正文时间标签(剧情时间锚点)与积压拦截(漏摘时拦截发送、提示补摘)。</p>
+        <p class="bbs-field-hint">开启后自动生成摘要与总结,同时启用正文时间标签(剧情时间锚点)与积压拦截(漏摘时拦截发送、提示补摘)。</p>
+        <label class="bbs-switch-row">
+          <span class="bbs-field-label">自动管理楼层隐藏</span>
+          <input v-model="apiSettings.autoHideEnabled" type="checkbox" class="bbs-checkbox" />
+        </label>
+        <p class="bbs-field-hint">开启后按保留窗口自动隐藏已摘要旧楼;关闭后仍会摘要、总结和向量索引,但不会改动 ST 消息的隐藏状态。</p>
         <label class="bbs-num-row">
           <span class="bbs-field-label">字数档位</span>
           <select v-model="apiSettings.verbosity" class="bbs-input bbs-select bbs-select-narrow">
@@ -947,7 +952,7 @@ function exportPublicApiDocument() {
           <span class="bbs-field-label">保留最近 AI 消息数</span>
           <input v-model.number="apiSettings.keepRecent" class="bbs-input bbs-num" type="number" min="0" />
         </label>
-        <p class="bbs-field-hint">保留多少条 AI 消息发送全文,超出部分自动隐藏并发送摘要。</p>
+        <p class="bbs-field-hint">自动管理楼层隐藏开启时,保留多少条 AI 消息发送全文,超出部分自动隐藏并发送摘要。</p>
         <label class="bbs-num-row">
           <span class="bbs-field-label">每次总结 AI 消息数</span>
           <input v-model.number="apiSettings.leafBatchThreshold" class="bbs-input bbs-num" type="number" min="0" />

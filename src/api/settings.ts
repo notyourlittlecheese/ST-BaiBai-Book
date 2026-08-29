@@ -197,8 +197,10 @@ export interface ApiSettings {
   channels: ApiChannel[];
   /** 各任务指派的渠道 id */
   assignments: Record<TaskType, string>;
-  /** 自动摘要开关。开启即一并启用:自动隐藏、正文时间标签、积压拦截(不再各自独立开关)。 */
+  /** 自动摘要开关。开启后自动生成摘要/总结,并启用正文时间标签与积压拦截。 */
   autoSummaryEnabled: boolean;
+  /** 自动管理楼层隐藏。关闭后仍摘要/总结/向量,但不改 ST 消息隐藏状态。 */
+  autoHideEnabled: boolean;
   /**
    * 仅摘要模式。继续分析、保存结构化状态,但不向主模型注入当前状态,
    * 也不再把物品/变量变动旁注写回正文。已有正文旁注不主动清理。
@@ -347,6 +349,7 @@ function defaults(): ApiSettings {
     channels: [],
     assignments: { summary: '', resummary: '' },
     autoSummaryEnabled: true,
+    autoHideEnabled: true,
     summaryOnlyMode: false,
     injection: { sceneFocus: true, lifeDetails: true, protagonist: true, npcs: true, items: true, scenes: true },
     keepRecent: 3,
@@ -417,6 +420,9 @@ function normalize(raw: unknown): ApiSettings {
   // 渲染世界书模板:布尔,缺失(老数据无此键)回退 true(默认开,让动态世界书条目拿到成品)
   merged.renderWorldInfoTemplates =
     typeof merged.renderWorldInfoTemplates === 'boolean' ? merged.renderWorldInfoTemplates : true;
+  // 自动隐藏管理:布尔,缺失(老数据无此键)回退 true,保持旧版「自动摘要会隐藏旧楼」行为。
+  merged.autoHideEnabled =
+    typeof merged.autoHideEnabled === 'boolean' ? merged.autoHideEnabled : true;
   // 注入设置:嵌套对象,逐字段兜底(老数据没有 injection 键时全回退 true = 老行为不变)
   const ri = ((raw as Partial<ApiSettings>).injection ?? {}) as Partial<InjectionSections>;
   merged.injection = {
@@ -603,6 +609,7 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.channels = src.channels;
   target.assignments = src.assignments;
   target.autoSummaryEnabled = src.autoSummaryEnabled;
+  target.autoHideEnabled = src.autoHideEnabled;
   target.summaryOnlyMode = src.summaryOnlyMode;
   target.injection = src.injection;
   target.keepRecent = src.keepRecent;

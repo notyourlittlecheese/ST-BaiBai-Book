@@ -21,6 +21,7 @@ export interface SummaryRow {
   msgIndex?: number;
   stale?: boolean;
   imported?: boolean;
+  omitted?: boolean;
 }
 
 export interface SummaryCtx {
@@ -33,6 +34,7 @@ export interface SummaryCtx {
   toggleSelect: (id: string) => void;
   openEdit: (r: SummaryRow) => void;
   onDelete: (r: SummaryRow) => void;
+  toggleOmit: (r: SummaryRow) => void;
   nodeFloors: (n: ViewNode, map: Map<string, ViewNode>) => [number, number];
   toRow: (n: ViewNode, map: Map<string, ViewNode>) => SummaryRow;
   levelLabel: (level: number, imported?: boolean) => string;

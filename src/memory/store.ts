@@ -29,6 +29,7 @@ export interface LeafView {
   msgIndex: number;
   active: boolean; // 所在消息已隐藏(is_system)
   stale: boolean; // 正文已变、尚未重摘
+  omitted: boolean; // 已标记番外/不计入记忆
 }
 export const derivedMeta = reactive<{ hasLeaf: boolean; leaves: LeafView[]; pendingFloors: number[]; latestStoryTime: string; rev: number }>({
   hasLeaf: false,
@@ -81,7 +82,6 @@ export function recomputeDerived(): void {
   if (chat) {
     for (let i = 0; i < chat.length; i++) {
       const m = chat[i];
-      if (m?.extra?.bbs_omit) continue; // 番外楼:不进摘要页叶子列表
       const leaf = getLeaf(m);
       if (!leaf) continue;
       const valid = leafValid(m);
@@ -95,11 +95,12 @@ export function recomputeDerived(): void {
         msgIndex: i,
         active: m.is_system === true,
         stale: !valid,
+        omitted: m.extra?.bbs_omit === true,
       });
     }
   }
   derivedMeta.leaves = leaves;
-  derivedMeta.hasLeaf = leaves.some(l => !l.stale);
+  derivedMeta.hasLeaf = leaves.some(l => !l.stale && !l.omitted);
   derivedMeta.latestStoryTime = latestStoryTime(chat);
   // 待摘要楼层(AI 楼且无有效叶子),供摘要页「未摘要楼层」列表逐楼补摘
   derivedMeta.pendingFloors = chat ? pendingAiFloors(chat) : [];

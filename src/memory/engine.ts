@@ -622,21 +622,21 @@ export async function handleGenerationIntercept(
   return true;
 }
 
-/** 摘要后的统一收尾:同步滑动隐藏 + 刷新注入(自动隐藏已并入摘要流程,不再有独立开关) */
+/** 摘要后的统一收尾:按设置同步滑动隐藏 + 刷新注入。 */
 async function afterSummaryHideAndInject(chat: STMessage[]): Promise<void> {
-  await syncWindowHiddenState(chat);
+  if (apiSettings.autoHideEnabled) await syncWindowHiddenState(chat);
   refreshInjection();
 }
 
 /**
  * 对外的「检测一次隐藏」:按当前叶子覆盖情况同步滑动窗口隐藏 + 刷新注入。
- * 供迁移等批量写入叶子后调用,复用摘要收尾同一套逻辑;守卫与摘要流程一致
- * (引擎在此聊天不生效 / 自动摘要关闭则不隐藏,仅刷新注入)。force=true 供用户主动导入/删除
- * 旧总结时立即同步覆盖范围,不受自动摘要开关影响。
+ * 供迁移等批量写入叶子后调用,复用摘要收尾同一套逻辑;守卫与摘要流程一致。
+ * 引擎在此聊天不生效 / 自动隐藏关闭则不隐藏,仅刷新注入。force=true 供用户主动导入/删除
+ * 旧总结时立即同步覆盖范围,不受自动摘要开关影响,但仍尊重自动隐藏管理开关。
  */
 export async function syncHiddenNow(force = false): Promise<void> {
   const chat = getContext()?.chat ?? [];
-  if (force || (engineActiveHere() && apiSettings.autoSummaryEnabled)) {
+  if (apiSettings.autoHideEnabled && (force || (engineActiveHere() && apiSettings.autoSummaryEnabled))) {
     await afterSummaryHideAndInject(chat);
   } else {
     refreshInjection();
@@ -1810,7 +1810,7 @@ function reactToChatMutation(syncHidden = false): void {
     reactTimer = null;
     pruneBrokenComps(); // 叶子失效 → 删包含它的整条祖先压缩链
     recomputeDerived(); // 删叶/陈旧 → 物品/计划回退;UI(derivedMeta)更新
-    if (syncHidden && engineActiveHere() && apiSettings.autoSummaryEnabled) {
+    if (syncHidden && engineActiveHere() && apiSettings.autoSummaryEnabled && apiSettings.autoHideEnabled) {
       void syncWindowHiddenState(getContext()?.chat ?? [])
         .catch(e => {
           engineState.lastError = e instanceof Error ? e.message : String(e);
@@ -1905,6 +1905,15 @@ export function bindEngine(): void {
     () => {
       syncTimeTagRegex();
       refreshInjection();
+    },
+  );
+
+  // 自动隐藏管理切换:开启时对齐一次窗口隐藏;关闭时不主动 unhide,把控制权留给用户/其它插件。
+  watch(
+    () => apiSettings.autoHideEnabled,
+    on => {
+      if (on) void syncHiddenNow();
+      else refreshInjection();
     },
   );
 

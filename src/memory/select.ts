@@ -24,6 +24,8 @@ export interface ViewNode {
   childIds: string[]; // comp 才有
   msgIndex: number; // leaf 才有意义(排序键);comp 取 -1
   active: boolean; // leaf:所在消息已隐藏
+  /** 叶子已标记番外/不计入记忆;仅供摘要页展示,选择/注入时应跳过。 */
+  omitted?: boolean;
   /** 无逐楼 child 的导入历史节点;选择算法把它视为与 leaf 同类的完整终端。 */
   atomic?: boolean;
   /** 原子导入历史的显式楼层范围。 */

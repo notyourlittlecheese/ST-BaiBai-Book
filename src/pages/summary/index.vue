@@ -4,7 +4,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { addSummary, appendOpToLatestLeaf, deleteLeafAt, deleteSummary, deleteSummarySubtrees, editLeafAt, editPlan, editSummary, invalidateSummaryAncestors } from '@/memory/apply';
 import { apiSettings } from '@/api/settings';
-import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, isAiFloor, resummarizeNow, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
+import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, isAiFloor, resummarizeNow, setFloorOmit, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
 import { estimateInjectionTokenBreakdown, refreshInjection, selectViewNodes, type ViewNode } from '@/memory/inject';
 import { compactTimeLabel, formatRange, splitTimeLabel } from '@/memory/timeTag';
 import { relativeTimeLabel, weekdayLabel } from '@/memory/timeRel';
@@ -314,7 +314,7 @@ const byId = computed<Map<string, ViewNode>>(() => {
     m.set(l.id, {
       id: l.id, kind: 'leaf', level: 0, text: l.text,
       timeStart: l.timeStart, timeEnd: l.timeEnd, timeLabel: l.timeLabel,
-      createdAt: l.createdAt, childIds: [], msgIndex: l.msgIndex, active: l.active,
+      createdAt: l.createdAt, childIds: [], msgIndex: l.msgIndex, active: l.active, omitted: l.omitted,
     });
   }
   for (const s of memory.summaries) {
@@ -370,6 +370,7 @@ function toRow(n: ViewNode, map: Map<string, ViewNode>): SummaryRow {
     floorHi: hi,
     msgIndex: n.kind === 'leaf' ? n.msgIndex : undefined,
     stale: false,
+    omitted: n.omitted === true,
     imported: n.atomic === true,
   };
 }
@@ -380,10 +381,13 @@ const rootNodes = computed<ViewNode[]>(() => {
   const referenced = new Set<string>();
   for (const s of memory.summaries) for (const c of s.childIds ?? []) referenced.add(c);
   const roots = [...map.values()].filter(n => !referenced.has(n.id));
-  // 含失效后代的压缩节点不完整 → selectViewNodes 自动降级,只拆受影响那条链(旁支完好的整条保留)
-  const chosen = selectViewNodes({ byId: map, roots }, () => true);
-  return chosen.sort((a, b) => nodeFloors(b, map)[1] - nodeFloors(a, map)[1]);
+  // 含失效/番外后代的压缩节点不完整 → selectViewNodes 自动降级,只拆受影响那条链(旁支完好的整条保留)
+  const chosen = selectViewNodes({ byId: map, roots }, n => n.omitted !== true);
+  const omittedLeaves = [...map.values()].filter(n => n.kind === 'leaf' && n.omitted === true);
+  return [...chosen, ...omittedLeaves].sort((a, b) => nodeFloors(b, map)[1] - nodeFloors(a, map)[1]);
 });
+
+const selectableRootNodes = computed(() => rootNodes.value.filter(n => n.omitted !== true));
 
 /* ---- 视图态:展开 / 搜索 / 选择(三者互斥,均为临时 UI 态,不持久化) ---- */
 const expanded = ref<Set<string>>(new Set()); // 已展开的 comp id
@@ -527,7 +531,7 @@ const visibleRows = computed<DisplayRow[]>(() => {
   if (searching.value) return buildSearchRows();
   const map = byId.value;
   // 选择模式:仅根,倒序,带复选框
-  return rootNodes.value.map(n => ({ ...toRow(n, map), isChild: false }));
+  return selectableRootNodes.value.map(n => ({ ...toRow(n, map), isChild: false }));
 });
 
 /** 搜索命中文本切片:把 text 按命中词切成 [{t, hit}] 片段,模板用 span 渲染(不走 v-html,防 XSS)。 */
@@ -568,20 +572,21 @@ function toggleSelect(id: string) {
 /** 根是否已全部勾选(驱动「全选 / 取消全选」文案) */
 const allSelected = computed(() => {
   const roots = rootNodes.value;
-  return roots.length > 0 && roots.every(n => selectedIds.value.has(n.id));
+  const selectable = selectableRootNodes.value;
+  return selectable.length > 0 && selectable.every(n => selectedIds.value.has(n.id));
 });
 /** 全选 / 取消全选切换:全选时写入全部根 id;已全选则清空。 */
 function toggleSelectAll() {
   if (allSelected.value) {
     selectedIds.value = new Set();
   } else {
-    selectedIds.value = new Set(rootNodes.value.map(n => n.id));
+    selectedIds.value = new Set(selectableRootNodes.value.map(n => n.id));
   }
 }
 
 /** 选中项在根序列(倒序)里的位置索引,升序排列 */
 const selectedRootIndexes = computed<number[]>(() => {
-  const roots = rootNodes.value;
+  const roots = selectableRootNodes.value;
   const idxs: number[] = [];
   roots.forEach((n, i) => { if (selectedIds.value.has(n.id)) idxs.push(i); });
   return idxs;
@@ -596,7 +601,7 @@ const canMerge = computed(() => {
 /** 选中项覆盖的楼层范围与将生成的层级(供操作条展示) */
 const selectionSummary = computed(() => {
   const map = byId.value;
-  const picked = rootNodes.value.filter(n => selectedIds.value.has(n.id));
+  const picked = selectableRootNodes.value.filter(n => selectedIds.value.has(n.id));
   if (!picked.length) return { count: 0, floorLo: -1, floorHi: -1, level: 1 };
   let lo = Infinity, hi = -Infinity, maxLevel = 0;
   for (const n of picked) {
@@ -624,7 +629,7 @@ async function runMerge() {
   if (!canMerge.value || merging.value) return;
   // 按根序列升序(即楼层旧→新)传给引擎;引擎内部还会再排一次
   const idxs = [...selectedRootIndexes.value].sort((a, b) => a - b);
-  const ids = idxs.map(i => rootNodes.value[i].id);
+  const ids = idxs.map(i => selectableRootNodes.value[i].id);
   merging.value = true;
   try {
     const res = await summarizeSelected(ids);
@@ -740,6 +745,12 @@ async function onDelete(r: SummaryRow) {
   refreshInjection();
 }
 
+async function toggleOmit(r: SummaryRow) {
+  if (r.kind !== 'leaf' || typeof r.msgIndex !== 'number') return;
+  await setFloorOmit(r.msgIndex, !r.omitted);
+  toast(r.omitted ? '已恢复计入记忆' : '已标为不计入记忆', 'success');
+}
+
 /* ============ 编辑弹窗 ============
  * 叶子:可改「故事内时间」+ 正文;总结:只压文本,故只改正文。
  * nested = 该节点已被某条总结收纳:编辑它不影响上层总结文本(总结只压快照),
@@ -785,7 +796,7 @@ function saveEdit() {
 // 注入递归卡片(SummaryNode)所需的状态、helper 与动作,免逐层 props 透传
 provide(SUMMARY_CTX, {
   byId, expanded, selectMode, searching, selectedIds,
-  toggleExpand, toggleSelect, openEdit, onDelete,
+  toggleExpand, toggleSelect, openEdit, onDelete, toggleOmit,
   nodeFloors, toRow, levelLabel, floorLabel, rowTime, rowRelative, highlightParts,
 });
 </script>
@@ -1113,7 +1124,7 @@ provide(SUMMARY_CTX, {
         v-for="r in visibleRows"
         :key="r.key"
         class="bbs-summary-card"
-        :class="{ 'is-deep': r.level > 0, 'is-stale': r.stale, 'is-child': r.isChild, 'is-selected': selectMode && selectedIds.has(r.id) }"
+        :class="{ 'is-deep': r.level > 0, 'is-stale': r.stale, 'is-child': r.isChild, 'is-selected': selectMode && selectedIds.has(r.id), 'is-omit': r.omitted }"
         :role="selectMode ? 'checkbox' : undefined"
         :aria-checked="selectMode ? selectedIds.has(r.id) : undefined"
         :tabindex="selectMode ? 0 : undefined"
@@ -1150,6 +1161,16 @@ provide(SUMMARY_CTX, {
             <!-- 操作键:编辑对任何命中行开放(结构安全;叶子改完向量自动重 embed,总结不进向量库);
                  删除仅根行(删深层会级联删祖先总结链);选择模式无操作 -->
             <span v-if="!selectMode" class="bbs-summary-acts">
+              <button
+                v-if="r.kind === 'leaf' && typeof r.msgIndex === 'number'"
+                class="bbs-summary-act"
+                :class="{ 'is-active': r.omitted }"
+                type="button"
+                :title="r.omitted ? '恢复计入记忆' : '不计入记忆'"
+                @click="toggleOmit(r)"
+              >
+                <Icon :name="r.omitted ? 'eye-off' : 'eye'" />
+              </button>
               <button
                 class="bbs-summary-act"
                 type="button"

@@ -369,6 +369,12 @@
   opacity: 0.6;
 }
 
+.bbs-summary-card.is-omit {
+  background: transparent;
+  border-style: dashed;
+  opacity: 0.72;
+}
+
 .bbs-summary-meta {
   display: flex;
   align-items: center;
@@ -483,6 +489,11 @@
 .bbs-summary-act:hover {
   color: var(--bbs-accent);
   background: var(--bbs-surface-2);
+}
+
+.bbs-summary-act.is-active {
+  color: var(--bbs-warning);
+  background: var(--bbs-warning-soft);
 }
 
 .bbs-summary-del:hover {
