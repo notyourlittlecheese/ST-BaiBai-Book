@@ -34,6 +34,7 @@ function llmOptionalScalar(v: unknown): string | undefined {
 /** 引擎运行状态(供 UI 显示) */
 export const engineState = reactive({
   running: false,
+  cancelling: false,
   lastError: '' as string,
   lastRunAt: 0,
 });
@@ -70,9 +71,17 @@ let busy = false;
 // 当前在飞的摘要完成信号:拦截器可 await 它(成功/失败都 resolve,永不 reject,故不会卡死生成)。
 // 无在飞摘要时为 null。在 runSummary 头尾维护。
 let currentRun: Promise<void> | null = null;
+let currentRunAbort: AbortController | null = null;
 let summaryRunSeq = 0;
 export function currentSummaryPromise(): Promise<void> | null {
   return currentRun;
+}
+
+export function cancelCurrentSummary(): void {
+  if (!currentRunAbort) return;
+  engineState.cancelling = true;
+  engineState.lastError = '摘要已停止';
+  currentRunAbort.abort();
 }
 
 /** 把消息渲染成给摘要模型的文本(cleanBody:裁正文段 + 整块删噪声标签 + 时间标签转文本) */
@@ -809,6 +818,11 @@ export async function maybeSummarizePrevAi(
     await afterSummaryHideAndInject(chat);
     return;
   }
+  if (manuallyHiddenLatestAi(chat, target)) {
+    console.log('[柏宝书] 最新 AI 楼已被用户手动隐藏,跳过自动摘要:', target);
+    await afterSummaryHideAndInject(chat);
+    return;
+  }
 
   if (waitUntilRequestStarts) {
     let markStarted: () => void = () => {};
@@ -854,6 +868,14 @@ export function prevAiFloor(chat: STMessage[], skipLastAi: boolean): number {
     if (isAiFloor(chat[i])) return i;
   }
   return -1;
+}
+
+/** 最新稳定 AI 楼若是用户手动隐藏的,视作未定稿,自动摘要不碰它。 */
+function manuallyHiddenLatestAi(chat: STMessage[], floor: number): boolean {
+  if (floor < 0) return false;
+  if (floor !== prevAiFloor(chat, false)) return false;
+  const m = chat[floor];
+  return isRealAiReply(m) && m?.is_system === true && m.extra?.bbs_hidden !== true;
 }
 
 /** 把递增的索引列表合并成连续区间(供 /hide 0-3 这种批量参数用) */
@@ -975,20 +997,22 @@ async function syncWindowHiddenState(chat: STMessage[]): Promise<void> {
  *  - 未指派(空)→ 跟随主 API(requestViaMainApi → generateRaw,用主界面当前在用的 API,不带聊天历史)。
  * 主 API 也不可用(ST 无 generateRaw)时返回 error,调用方据此早退并写 lastError。
  */
-function resolveSender(
-  task: TaskType,
-): { send: (messages: ChatMsg[]) => Promise<string>; label: string } | { error: string } {
+type SummarySender = { send: (messages: ChatMsg[], signal?: AbortSignal) => Promise<string>; label: string };
+
+function resolveSender(task: TaskType): SummarySender | { error: string } {
   const channels = getChannelsForTask(task);
   if (channels.length) {
     const labels = channels.map(channel => `「${channel.name}」(${channel.model})`);
     return {
       label: channels.length === 1 ? `渠道${labels[0]}` : `渠道池${labels.join(' → ')}`,
-      send: async messages => {
+      send: async (messages, signal) => {
         const errors: string[] = [];
         for (const channel of channels) {
+          if (signal?.aborted) throw new Error('摘要已停止');
           try {
-            return await requestCompletion(channel, messages);
+            return await requestCompletion(channel, messages, { signal });
           } catch (e) {
+            if (signal?.aborted) throw new Error('摘要已停止');
             const msg = e instanceof Error ? e.message : String(e);
             errors.push(`${channel.name}: ${msg}`);
             console.warn(`[柏宝书] ${task} 渠道失败,尝试下一个:`, channel.name, msg);
@@ -1001,7 +1025,15 @@ function resolveSender(
   if (!mainApiAvailable()) {
     return { error: '未指派副 API 渠道,且当前主 API 不可用(请填好主 API 后重试,或为本任务单独指派渠道)' };
   }
-  return { send: messages => requestViaMainApi(messages), label: '主 API(主界面当前在用)' };
+  return {
+    send: async (messages, signal) => {
+      if (signal?.aborted) throw new Error('摘要已停止');
+      const text = await requestViaMainApi(messages);
+      if (signal?.aborted) throw new Error('摘要已停止');
+      return text;
+    },
+    label: '主 API(主界面当前在用)',
+  };
 }
 
 /**
@@ -1010,15 +1042,19 @@ function resolveSender(
  * 全部失败则抛出最后一次的错误,由调用方写 lastError。
  */
 async function sendAndParse<T>(
-  send: (messages: ChatMsg[]) => Promise<string>,
+  send: (messages: ChatMsg[], signal?: AbortSignal) => Promise<string>,
   messages: ChatMsg[],
   parse: (raw: string) => T,
+  signal?: AbortSignal,
 ): Promise<T> {
   const maxRetries = Math.max(0, apiSettings.summaryMaxRetries | 0);
   let lastErr: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (signal?.aborted) throw new Error('摘要已停止');
     try {
-      return parse(await send(messages));
+      const raw = await send(messages, signal);
+      if (signal?.aborted) throw new Error('摘要已停止');
+      return parse(raw);
     } catch (e) {
       lastErr = e;
       if (attempt < maxRetries) {
@@ -1041,27 +1077,36 @@ interface RunSummaryOptions {
   checkResummary?: boolean;
   /** 内部启动屏障:摘要上下文准备完毕、即将调用 API 时触发。 */
   onRequestStart?: () => void;
+  signal?: AbortSignal;
 }
 
 export function runSummary(aiFloor: number, options: RunSummaryOptions = {}): Promise<void> {
   const runId = ++summaryRunSeq;
   const chatId = getContext()?.getCurrentChatId?.() ?? '';
   const ownsFloorState = !!chatId && !busy && !currentRun;
+  const ctrl = options.signal ? null : new AbortController();
+  const signal = options.signal ?? ctrl?.signal;
   if (ownsFloorState) {
     floorBackfillOwnerRunId = runId;
     floorBackfillState.running = true;
     floorBackfillState.floor = aiFloor;
     floorBackfillState.chatId = chatId;
   }
-  const p = runSummaryInner(aiFloor, options).finally(() => {
+  if (ctrl) currentRunAbort = ctrl;
+  engineState.cancelling = false;
+  const p = runSummaryInner(aiFloor, { ...options, signal }).finally(() => {
     const ownsCurrentRun = currentRun === p;
-    if (ownsCurrentRun) currentRun = null;
+    if (ownsCurrentRun) {
+      currentRun = null;
+      if (currentRunAbort === ctrl) currentRunAbort = null;
+    }
     if (floorBackfillOwnerRunId === runId) {
       floorBackfillOwnerRunId = null;
       floorBackfillState.running = false;
       floorBackfillState.floor = null;
       floorBackfillState.chatId = '';
     }
+    if (ownsCurrentRun) engineState.cancelling = false;
   });
   currentRun = p;
   return p;
@@ -1157,11 +1202,13 @@ function applyLeafForFloor(
 async function summarizeFloorWork(
   chat: STMessage[],
   aiFloor: number,
-  sender: { send: (messages: ChatMsg[]) => Promise<string>; label: string },
+  sender: SummarySender,
   options: Pick<RunSummaryOptions, 'replaceLeaf' | 'onRequestStart'> = {},
+  signal?: AbortSignal,
 ): Promise<void> {
   const ctx = getContext();
   if (!ctx) throw new Error('无 ST 上下文');
+  if (signal?.aborted) throw new Error('摘要已停止');
   if (!chat[aiFloor]) {
     throw new Error(`摘要失败:楼层 #${aiFloor} 已不存在(可能在请求期间被删除)`);
   }
@@ -1219,6 +1266,7 @@ async function summarizeFloorWork(
     { role: 'system', content: THINKING_CHECKLIST },
     { role: 'assistant', content: THINKING_PREFILL },
   );
+  if (signal?.aborted) throw new Error('摘要已停止');
   options.onRequestStart?.();
   const delta = await sendAndParse(sender.send, messages, raw => {
     console.log('[柏宝书] 摘要原始返回(未清洗):\n', raw);
@@ -1228,8 +1276,9 @@ async function summarizeFloorWork(
       throw new Error(raw.trim() ? '摘要失败:AI道歉或掉格式' : '摘要失败:AI空回');
     }
     return { ...d, summary } as SummaryDelta & { summary: string };
-  });
+  }, signal);
 
+  if (signal?.aborted) throw new Error('摘要已停止');
   applyLeafForFloor(chat, aiFloor, delta, stateBefore, options.replaceLeaf);
   engineState.lastRunAt = Date.now();
 
@@ -1263,7 +1312,7 @@ async function runSummaryInner(aiFloor: number, options: RunSummaryOptions = {})
   engineState.running = true;
   engineState.lastError = '';
   try {
-    await summarizeFloorWork(chat, aiFloor, sender, options);
+    await summarizeFloorWork(chat, aiFloor, sender, options, options.signal);
     // 摘要积累到阈值则触发总结
     if (options.checkResummary !== false) await checkResummary();
   } catch (e) {
@@ -1329,7 +1378,7 @@ export function planBatches(chat: STMessage[], floors: number[], maxChars: numbe
 async function summarizeBatchWork(
   chat: STMessage[],
   block: number[],
-  sender: { send: (messages: ChatMsg[]) => Promise<string>; label: string },
+  sender: SummarySender,
 ): Promise<void> {
   const ctx = getContext();
   if (!ctx) throw new Error('无 ST 上下文');

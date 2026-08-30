@@ -4,7 +4,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { addSummary, appendOpToLatestLeaf, deleteLeafAt, deleteSummary, deleteSummarySubtrees, editLeafAt, editPlan, editSummary, invalidateSummaryAncestors } from '@/memory/apply';
 import { apiSettings } from '@/api/settings';
-import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, isAiFloor, resummarizeNow, setFloorOmit, setFloorsOmit, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
+import { batchBackfill, batchState, cancelBatchBackfill, cancelCurrentSummary, engineState, floorBackfillState, isAiFloor, resummarizeNow, setFloorOmit, setFloorsOmit, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
 import { estimateInjectionTokenBreakdown, refreshInjection, selectViewNodes, type ViewNode } from '@/memory/inject';
 import { compactTimeLabel, formatRange, splitTimeLabel } from '@/memory/timeTag';
 import { relativeTimeLabel, weekdayLabel } from '@/memory/timeRel';
@@ -1030,6 +1030,18 @@ provide(SUMMARY_CTX, {
           <Icon v-else name="bolt" />
           <span class="bbs-btn-label">立即总结</span>
         </button>
+        <button
+          v-if="!selectMode && floorBackfillState.running"
+          class="bbs-btn bbs-btn-sm bbs-stop-summary-btn"
+          type="button"
+          :disabled="engineState.cancelling"
+          title="停止当前自动摘要请求"
+          @click="cancelCurrentSummary"
+        >
+          <span v-if="engineState.cancelling" class="bbs-pending-spin"></span>
+          <Icon v-else name="close" />
+          <span class="bbs-btn-label">{{ engineState.cancelling ? '停止中' : '停止摘要' }}</span>
+        </button>
       </div>
     </div>
     <p v-if="resummaryHint" class="bbs-resummary-hint">{{ resummaryHint }}</p>
@@ -1737,6 +1749,18 @@ provide(SUMMARY_CTX, {
 }
 /* 复用未摘要楼层的旋转环(.bbs-pending-spin),此处微调尺寸贴合按钮文字 */
 .bbs-resummary-btn .bbs-pending-spin {
+  width: 12px;
+  height: 12px;
+}
+.bbs-summary-tools .bbs-stop-summary-btn {
+  color: var(--bbs-danger);
+  border-color: var(--bbs-line-strong);
+}
+.bbs-summary-tools .bbs-stop-summary-btn:hover:not(:disabled) {
+  border-color: var(--bbs-danger);
+  background: var(--bbs-danger-soft);
+}
+.bbs-summary-tools .bbs-stop-summary-btn .bbs-pending-spin {
   width: 12px;
   height: 12px;
 }
