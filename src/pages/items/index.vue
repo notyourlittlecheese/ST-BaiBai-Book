@@ -22,7 +22,7 @@ function addItem() {
 function removeItem(id: string) {
   const it = memory.items.find(i => i.id === id);
   if (!it) return;
-  appendOpToLatestLeaf({ items: { remove: [it.name] } });
+  editItem(it.name, { qty: 0 });
 }
 
 /* —— 编辑弹窗:改名/数量/描述。数量留空=维持(update 无法清空,清空数量请删后重建) —— */

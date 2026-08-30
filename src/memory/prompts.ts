@@ -58,8 +58,8 @@ export const RESUMMARY2_MACROS: PromptMacro[] = [
   { token: '{{user}}', desc: '主角名' },
   { token: '{{char}}', desc: '角色名' },
   { token: '{{content}}', desc: '待融合的多条上层总结正文' },
-  { token: '{{target_min}}', desc: '最低字数(详细为输入的 40%,精简为 30%)' },
-  { token: '{{target_max}}', desc: '最高字数(详细为输入的 50%,精简为 40%)' },
+  { token: '{{target_min}}', desc: '最低字数(详细为输入的 40%,精简为 60%)' },
+  { token: '{{target_max}}', desc: '最高字数(详细为输入的 50%,精简为 70%)' },
   { token: '{{target}}', desc: '兼容旧自定义模板:等同于最高字数 {{target_max}}' },
 ];
 
@@ -905,10 +905,10 @@ const VERBOSITY_PROFILES: Record<Verbosity, VerbosityProfile> = {
     resummary2MaxRatio: 0.5,
   },
   concise: {
-    summaryWords: '80-150',
-    resummaryWords: '150-300',
-    resummary2MinRatio: 0.3,
-    resummary2MaxRatio: 0.4,
+    summaryWords: '60-120',
+    resummaryWords: '400-700',
+    resummary2MinRatio: 0.6,
+    resummary2MaxRatio: 0.7,
   },
 };
 
@@ -1083,7 +1083,7 @@ export function buildBatchThinking(floorCount: number): { checklist: string; pre
 }
 
 /**
- * 二次总结字数区间:详细为内容总字数的 40%–50%,精简为 30%–40%。
+ * 二次总结字数区间:详细为内容总字数的 40%–50%,精简为 60%–70%。
  */
 export function resummary2Targets(contentLen: number): { min: number; max: number } {
   const v = currentVerbosity();

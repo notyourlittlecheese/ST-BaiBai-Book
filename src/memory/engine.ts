@@ -68,6 +68,7 @@ export function cancelBatchBackfill(): void {
 }
 
 let busy = false;
+let singleRunBusyOwner: number | null = null;
 // 当前在飞的摘要完成信号:拦截器可 await 它(成功/失败都 resolve,永不 reject,故不会卡死生成)。
 // 无在飞摘要时为 null。在 runSummary 头尾维护。
 let currentRun: Promise<void> | null = null;
@@ -82,6 +83,15 @@ export function cancelCurrentSummary(): void {
   engineState.cancelling = true;
   engineState.lastError = '摘要已停止';
   currentRunAbort.abort();
+  currentRun = null;
+  currentRunAbort = null;
+  singleRunBusyOwner = null;
+  busy = false;
+  engineState.running = false;
+  floorBackfillOwnerRunId = null;
+  floorBackfillState.running = false;
+  floorBackfillState.floor = null;
+  floorBackfillState.chatId = '';
 }
 
 /** 把消息渲染成给摘要模型的文本(cleanBody:裁正文段 + 整块删噪声标签 + 时间标签转文本) */
@@ -460,6 +470,7 @@ export function pendingAiFloors(chat: STMessage[]): number[] {
   const imported = importedHistoryRanges();
   for (let i = 0; i < chat.length; i++) {
     if (floorInImportedRanges(i, imported)) continue;
+    if (manuallyHiddenLatestAi(chat, i)) continue;
     if (isAiFloor(chat[i]) && !leafValid(chat[i])) out.push(i);
   }
   return out;
@@ -516,6 +527,7 @@ export function openingPendingFloor(chat: STMessage[]): number {
     if (isAiFloor(chat[i])) return -1; // 之前还有别的 AI 楼 → 不是开场白
   }
   if (importedHistoryCovers(lastAi)) return -1; // 已由导入历史接管,不再为开场白单独造叶子
+  if (manuallyHiddenLatestAi(chat, lastAi)) return -1; // 用户已隐藏最新楼:视作未定稿,不抢先摘要
   if (leafValid(chat[lastAi])) return -1; // 已摘 → 锚点已在
   const tag = parseTimeRange(clampToTimeTags(chat[lastAi].mes));
   if (tag.start && tag.end) return -1; // 开场白自带时间标签 → 主模型能读,不必先摘
@@ -1078,6 +1090,7 @@ interface RunSummaryOptions {
   /** 内部启动屏障:摘要上下文准备完毕、即将调用 API 时触发。 */
   onRequestStart?: () => void;
   signal?: AbortSignal;
+  runId?: number;
 }
 
 export function runSummary(aiFloor: number, options: RunSummaryOptions = {}): Promise<void> {
@@ -1093,8 +1106,9 @@ export function runSummary(aiFloor: number, options: RunSummaryOptions = {}): Pr
     floorBackfillState.chatId = chatId;
   }
   if (ctrl) currentRunAbort = ctrl;
+  singleRunBusyOwner = runId;
   engineState.cancelling = false;
-  const p = runSummaryInner(aiFloor, { ...options, signal }).finally(() => {
+  const p = runSummaryInner(aiFloor, { ...options, signal, runId }).finally(() => {
     const ownsCurrentRun = currentRun === p;
     if (ownsCurrentRun) {
       currentRun = null;
@@ -1318,8 +1332,11 @@ async function runSummaryInner(aiFloor: number, options: RunSummaryOptions = {})
   } catch (e) {
     engineState.lastError = e instanceof Error ? e.message : String(e);
   } finally {
-    busy = false;
-    engineState.running = false;
+    if (options.runId === undefined || singleRunBusyOwner === options.runId) {
+      singleRunBusyOwner = null;
+      busy = false;
+      engineState.running = false;
+    }
   }
 }
 
