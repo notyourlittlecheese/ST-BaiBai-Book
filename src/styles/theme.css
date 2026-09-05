@@ -190,26 +190,26 @@
 }
 
 /* ========== 雾璃 ==========
-   蓝灰紫莫兰迪 + 半透明磨砂。主窗口和卡片都保留足够实色,
-   避免真正透明到读不清;backdrop-filter 只在本主题额外增强。 */
+   蓝 / 灰 / 紫三色分工的莫兰迪磨砂主题。明确避开黄棕色系:
+   主强调用雾蓝,提示/悬念用灰紫,危险用冷玫紫。 */
 .bbs-root[data-theme='glass'] {
-  --bbs-bg: #EEF1F7D9;
-  --bbs-surface: #FBFCFFE0;
-  --bbs-surface-2: #E7EAF3B8;
-  --bbs-ink: #303544;
-  --bbs-ink-soft: #596173;
-  --bbs-ink-muted: #858CA0;
-  --bbs-accent: #717BA3;
-  --bbs-accent-soft: #717BA326;
+  --bbs-bg: #EEF2F8D9;
+  --bbs-surface: #FBFCFFE3;
+  --bbs-surface-2: #E6EBF4BF;
+  --bbs-ink: #2F3546;
+  --bbs-ink-soft: #596278;
+  --bbs-ink-muted: #838CA3;
+  --bbs-accent: #667FA6;
+  --bbs-accent-soft: #667FA626;
   --bbs-accent-ink: #FFFFFF;
-  --bbs-line: #C9CEDBCC;
-  --bbs-line-strong: #AEB5C9CC;
-  --bbs-danger: #B45E70;
-  --bbs-danger-soft: #B45E7022;
-  --bbs-warning: #967858;
-  --bbs-warning-soft: #96785824;
-  --bbs-overlay: #68708A59;
-  --bbs-shadow: 0 24px 70px -26px #56607A73, 0 8px 24px -14px #6E73904D;
+  --bbs-line: #C8CEDDDD;
+  --bbs-line-strong: #A9B2C9D9;
+  --bbs-danger: #A96382;
+  --bbs-danger-soft: #A9638224;
+  --bbs-warning: #7C719D;
+  --bbs-warning-soft: #7C719D26;
+  --bbs-overlay: #66718F59;
+  --bbs-shadow: 0 24px 70px -26px #58637D73, 0 8px 24px -14px #6B72904D;
 }
 
 /* ========== 跟随 ST ==========
