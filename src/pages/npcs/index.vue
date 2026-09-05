@@ -506,9 +506,12 @@ function confirmRemove() {
                   <button class="bbs-item-act bbs-item-del" type="button" title="删除" @click="askRemove(n)"><Icon name="trash" /></button>
                 </span>
               </div>
-              <dl v-if="n.title || n.relation || n.ties || n.personality || n.desc || n.outfit || n.condition" class="bbs-npc-fields">
+              <dl v-if="n.title || n.relation || n.ties || n.personality || n.desc || n.outfit || n.condition || n.follow || n.location" class="bbs-npc-fields">
                 <div v-if="n.title" class="bbs-npc-field f-title"><dt>身份</dt><dd>{{ n.title }}</dd></div>
                 <div v-if="n.relation" class="bbs-npc-field f-rel"><dt>关系</dt><dd>{{ n.relation }}</dd></div>
+                <div v-if="n.follow || n.location" class="bbs-npc-field f-loc">
+                  <dt>所在</dt><dd>{{ n.follow ? '随主角同行' : n.location }}</dd>
+                </div>
                 <div v-if="n.outfit" class="bbs-npc-field f-outfit"><dt>着装</dt><dd>{{ n.outfit }}</dd></div>
                 <div v-if="n.condition" class="bbs-npc-field f-cond"><dt>状态</dt><dd>{{ n.condition }}</dd></div>
                 <div v-if="n.personality" class="bbs-npc-field f-trait"><dt>性格</dt><dd>{{ n.personality }}</dd></div>
@@ -557,9 +560,10 @@ function confirmRemove() {
                   <button class="bbs-item-act bbs-item-del" type="button" title="删除" @click="askRemove(n)"><Icon name="trash" /></button>
                 </span>
               </div>
-              <dl v-if="n.title || n.relation || n.personality" class="bbs-npc-fields">
+              <dl v-if="n.title || n.relation || n.personality || n.location" class="bbs-npc-fields">
                 <div v-if="n.title" class="bbs-npc-field f-title"><dt>身份</dt><dd>{{ n.title }}</dd></div>
                 <div v-if="n.relation" class="bbs-npc-field f-rel"><dt>关系</dt><dd>{{ n.relation }}</dd></div>
+                <div v-if="n.location" class="bbs-npc-field f-loc"><dt>所在</dt><dd>{{ n.location }}</dd></div>
                 <div v-if="n.personality" class="bbs-npc-field f-trait"><dt>性格</dt><dd>{{ n.personality }}</dd></div>
               </dl>
             </div>
@@ -605,9 +609,10 @@ function confirmRemove() {
                   <button class="bbs-item-act bbs-item-del" type="button" title="删除" @click="askRemove(n)"><Icon name="trash" /></button>
                 </span>
               </div>
-              <dl v-if="n.title || n.relation" class="bbs-npc-fields">
+              <dl v-if="n.title || n.relation || n.location" class="bbs-npc-fields">
                 <div v-if="n.title" class="bbs-npc-field f-title"><dt>身份</dt><dd>{{ n.title }}</dd></div>
                 <div v-if="n.relation" class="bbs-npc-field f-rel"><dt>关系</dt><dd>{{ n.relation }}</dd></div>
+                <div v-if="n.location" class="bbs-npc-field f-loc"><dt>所在</dt><dd>{{ n.location }}</dd></div>
               </dl>
             </div>
           </article>

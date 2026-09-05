@@ -59,6 +59,36 @@
   overflow: hidden;
 }
 
+.bbs-root[data-theme='glass'] .bbs-window {
+  backdrop-filter: blur(22px) saturate(1.18);
+  -webkit-backdrop-filter: blur(22px) saturate(1.18);
+  border-color: color-mix(in srgb, var(--bbs-line-strong) 72%, #ffffff);
+}
+
+.bbs-root[data-theme='glass'] .bbs-surface,
+.bbs-root[data-theme='glass'] .bbs-modal,
+.bbs-root[data-theme='glass'] .bbs-input,
+.bbs-root[data-theme='glass'] .bbs-btn {
+  backdrop-filter: blur(14px) saturate(1.08);
+  -webkit-backdrop-filter: blur(14px) saturate(1.08);
+}
+
+.bbs-root[data-theme='glass'] :where(
+  .bbs-summary-card,
+  .bbs-pending,
+  .bbs-focus-card,
+  .bbs-plan,
+  .bbs-item,
+  .bbs-npc,
+  .bbs-scene,
+  .bbs-var-panel,
+  .bbs-setting-group,
+  .bbs-channel-card
+) {
+  backdrop-filter: blur(16px) saturate(1.08);
+  -webkit-backdrop-filter: blur(16px) saturate(1.08);
+}
+
 /* —— 内容区(分页容器) —— */
 .bbs-body {
   flex: 1 1 auto;

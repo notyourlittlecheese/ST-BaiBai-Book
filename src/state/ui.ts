@@ -18,7 +18,7 @@ export type NavPosition = 'top' | 'bottom' | 'auto';
  *   2) 这里给 ThemeName 加上 'xxx',并往 THEMES 注册表加一条。
  * 设置页与题首切换按钮都从 THEMES 自动读取,无需再改别处。
  */
-export type ThemeName = 'day' | 'night' | 'pastel' | 'green' | 'st';
+export type ThemeName = 'day' | 'night' | 'pastel' | 'green' | 'glass' | 'st';
 
 export interface ThemeDef {
   value: ThemeName;
@@ -32,6 +32,7 @@ export const THEMES: ThemeDef[] = [
   { value: 'night', label: '夜间', icon: 'moon' },
   { value: 'pastel', label: '粉彩', icon: 'sparkles' },
   { value: 'green', label: '木白', icon: 'sparkles' },
+  { value: 'glass', label: '雾璃', icon: 'sparkles' },
   { value: 'st', label: '跟随ST', icon: 'plug' },
 ];
 

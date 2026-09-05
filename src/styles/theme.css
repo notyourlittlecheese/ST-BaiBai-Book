@@ -189,6 +189,29 @@
   --bbs-shadow: 0 20px 56px -22px #32646033, 0 4px 14px -8px #3264601A;
 }
 
+/* ========== 雾璃 ==========
+   蓝灰紫莫兰迪 + 半透明磨砂。主窗口和卡片都保留足够实色,
+   避免真正透明到读不清;backdrop-filter 只在本主题额外增强。 */
+.bbs-root[data-theme='glass'] {
+  --bbs-bg: #EEF1F7D9;
+  --bbs-surface: #FBFCFFE0;
+  --bbs-surface-2: #E7EAF3B8;
+  --bbs-ink: #303544;
+  --bbs-ink-soft: #596173;
+  --bbs-ink-muted: #858CA0;
+  --bbs-accent: #717BA3;
+  --bbs-accent-soft: #717BA326;
+  --bbs-accent-ink: #FFFFFF;
+  --bbs-line: #C9CEDBCC;
+  --bbs-line-strong: #AEB5C9CC;
+  --bbs-danger: #B45E70;
+  --bbs-danger-soft: #B45E7022;
+  --bbs-warning: #967858;
+  --bbs-warning-soft: #96785824;
+  --bbs-overlay: #68708A59;
+  --bbs-shadow: 0 24px 70px -26px #56607A73, 0 8px 24px -14px #6E73904D;
+}
+
 /* ========== 跟随 ST ==========
    不定义自己的配色,而是从 SillyTavern 宿主主题的 --SmartTheme* 变量派生。
    之所以可行:自定义属性是可继承属性,能穿透 shadow 边界;且 :host{all:initial}
