@@ -470,7 +470,7 @@ export function pendingAiFloors(chat: STMessage[]): number[] {
   const imported = importedHistoryRanges();
   for (let i = 0; i < chat.length; i++) {
     if (floorInImportedRanges(i, imported)) continue;
-    if (manuallyHiddenLatestAi(chat, i)) continue;
+    if (manuallyHiddenTailAi(chat, i)) continue;
     if (isAiFloor(chat[i]) && !leafValid(chat[i])) out.push(i);
   }
   return out;
@@ -527,7 +527,7 @@ export function openingPendingFloor(chat: STMessage[]): number {
     if (isAiFloor(chat[i])) return -1; // 之前还有别的 AI 楼 → 不是开场白
   }
   if (importedHistoryCovers(lastAi)) return -1; // 已由导入历史接管,不再为开场白单独造叶子
-  if (manuallyHiddenLatestAi(chat, lastAi)) return -1; // 用户已隐藏最新楼:视作未定稿,不抢先摘要
+  if (manuallyHiddenTailAi(chat, lastAi)) return -1; // 用户已隐藏末尾楼:视作未定稿,不抢先摘要
   if (leafValid(chat[lastAi])) return -1; // 已摘 → 锚点已在
   const tag = parseTimeRange(clampToTimeTags(chat[lastAi].mes));
   if (tag.start && tag.end) return -1; // 开场白自带时间标签 → 主模型能读,不必先摘
@@ -830,8 +830,8 @@ export async function maybeSummarizePrevAi(
     await afterSummaryHideAndInject(chat);
     return;
   }
-  if (manuallyHiddenLatestAi(chat, target)) {
-    console.log('[柏宝书] 最新 AI 楼已被用户手动隐藏,跳过自动摘要:', target);
+  if (manuallyHiddenTailAi(chat, target)) {
+    console.log('[柏宝书] 末尾 AI 楼已被用户手动隐藏,跳过自动摘要:', target);
     await afterSummaryHideAndInject(chat);
     return;
   }
@@ -882,12 +882,19 @@ export function prevAiFloor(chat: STMessage[], skipLastAi: boolean): number {
   return -1;
 }
 
-/** 最新稳定 AI 楼若是用户手动隐藏的,视作未定稿,自动摘要不碰它。 */
-function manuallyHiddenLatestAi(chat: STMessage[], floor: number): boolean {
-  if (floor < 0) return false;
-  if (floor !== prevAiFloor(chat, false)) return false;
-  const m = chat[floor];
+function manuallyHiddenAi(m: STMessage | undefined): boolean {
   return isRealAiReply(m) && m?.is_system === true && m.extra?.bbs_hidden !== true;
+}
+
+/** 末尾连续 AI 楼若是用户手动隐藏的,视作未定稿,自动摘要不碰它们。 */
+function manuallyHiddenTailAi(chat: STMessage[], floor: number): boolean {
+  if (floor < 0) return false;
+  if (!manuallyHiddenAi(chat[floor])) return false;
+  for (let i = floor + 1; i < chat.length; i++) {
+    if (!isAiFloor(chat[i])) continue;
+    if (!manuallyHiddenAi(chat[i])) return false;
+  }
+  return true;
 }
 
 /** 把递增的索引列表合并成连续区间(供 /hide 0-3 这种批量参数用) */
