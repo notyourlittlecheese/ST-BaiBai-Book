@@ -48,6 +48,9 @@ const isChild = computed(() => props.depth > 0);
           <!-- 操作键:编辑对任何层级开放(结构安全:不改 id、不断链;叶子改完向量索引自动重 embed,
                总结不进向量库、只影响上下文注入);删除仅根行——删深层叶子会级联删整条祖先总结链 -->
           <span class="bbs-summary-acts">
+            <button class="bbs-summary-act" type="button" title="复制摘要" aria-label="复制摘要" @click="ctx.copySummary(row)">
+              <Icon name="copy" />
+            </button>
             <button
               v-if="row.kind === 'leaf' && typeof row.msgIndex === 'number'"
               class="bbs-summary-act"

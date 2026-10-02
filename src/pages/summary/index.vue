@@ -800,16 +800,62 @@ function saveEdit() {
   editing.value = null;
 }
 
+async function copyText(text: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      // HTTP 酒馆没有 Clipboard API,用临时选区兼容。
+      const input = document.createElement('textarea');
+      const focused = document.activeElement as HTMLElement | null;
+      input.value = text;
+      input.readOnly = true;
+      input.style.cssText = 'position:fixed;top:0;left:0;opacity:0;font-size:16px;pointer-events:none';
+      document.body.append(input);
+      try {
+        input.focus({ preventScroll: true });
+        input.select();
+        if (!document.execCommand('copy')) throw new Error('copy failed');
+      } finally {
+        input.remove();
+        focused?.focus({ preventScroll: true });
+      }
+    }
+    toast('已复制到剪贴板', 'success');
+  } catch {
+    toast('复制失败，请检查浏览器剪贴板权限', 'error');
+  }
+}
+
+async function copySummary(row: SummaryRow) {
+  await copyText(row.text);
+}
+
+async function copyAllSummaries() {
+  const rows = [...byId.value.values()].map(n => toRow(n, byId.value))
+    .sort((a, b) => a.floorLo - b.floorLo || a.level - b.level || a.floorHi - b.floorHi);
+  if (!rows.length) return;
+  await copyText(rows.map(r => {
+    const label = [floorLabel(r), r.kind === 'leaf' ? '单楼摘要' : levelLabel(r.level, r.imported), rowTime(r), r.omitted ? '不计入记忆' : ''].filter(Boolean).join(' · ');
+    return `${label}\n${r.text}`;
+  }).join('\n\n'));
+}
+
 // 注入递归卡片(SummaryNode)所需的状态、helper 与动作,免逐层 props 透传
 provide(SUMMARY_CTX, {
   byId, expanded, selectMode, searching, selectedIds,
-  toggleExpand, toggleSelect, openEdit, onDelete, toggleOmit,
+  toggleExpand, toggleSelect, openEdit, onDelete, toggleOmit, copySummary,
   nodeFloors, toRow, levelLabel, floorLabel, rowTime, rowRelative, highlightParts,
 });
 </script>
 
 <template>
   <section class="bbs-page">
+    <div class="bbs-copy-all-bar">
+      <button class="bbs-btn" type="button" :disabled="!byId.size" title="复制全部摘要与各级总结，包含折叠内容" @click="copyAllSummaries">
+        <Icon name="copy" /> 一键复制所有摘要
+      </button>
+    </div>
     <!-- ===== 眼下局势卡:当前场面快照(覆盖型;省略=不动,清空=落幕) ===== -->
     <div class="bbs-fold-section">
       <div class="bbs-section-head">
@@ -1198,6 +1244,9 @@ provide(SUMMARY_CTX, {
             <!-- 操作键:编辑对任何命中行开放(结构安全;叶子改完向量自动重 embed,总结不进向量库);
                  删除仅根行(删深层会级联删祖先总结链);选择模式无操作 -->
             <span v-if="!selectMode" class="bbs-summary-acts">
+              <button class="bbs-summary-act" type="button" title="复制摘要" aria-label="复制摘要" @click="copySummary(r)">
+                <Icon name="copy" />
+              </button>
               <button
                 v-if="r.kind === 'leaf' && typeof r.msgIndex === 'number'"
                 class="bbs-summary-act"
@@ -1467,6 +1516,16 @@ provide(SUMMARY_CTX, {
 </template>
 
 <style scoped>
+.bbs-copy-all-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 14px;
+}
+.bbs-copy-all-bar .bbs-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .bbs-page {
   height: 100%;
   display: flex;

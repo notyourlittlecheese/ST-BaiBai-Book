@@ -1101,6 +1101,7 @@ interface RunSummaryOptions {
 }
 
 export function runSummary(aiFloor: number, options: RunSummaryOptions = {}): Promise<void> {
+  if (busy || currentRun) return Promise.resolve();
   const runId = ++summaryRunSeq;
   const chatId = getContext()?.getCurrentChatId?.() ?? '';
   const ownsFloorState = !!chatId && !busy && !currentRun;
@@ -1335,9 +1336,9 @@ async function runSummaryInner(aiFloor: number, options: RunSummaryOptions = {})
   try {
     await summarizeFloorWork(chat, aiFloor, sender, options, options.signal);
     // 摘要积累到阈值则触发总结
-    if (options.checkResummary !== false) await checkResummary();
+    if (options.checkResummary !== false && !options.signal?.aborted) await checkResummary(options.signal);
   } catch (e) {
-    engineState.lastError = e instanceof Error ? e.message : String(e);
+    if (singleRunBusyOwner === options.runId) engineState.lastError = e instanceof Error ? e.message : String(e);
   } finally {
     if (options.runId === undefined || singleRunBusyOwner === options.runId) {
       singleRunBusyOwner = null;
@@ -1661,7 +1662,7 @@ function rootsAtLevel(level: number, chat: STMessage[]): RootView[] {
  * 用 AI 把这批的**叙事文本**融合成一条上层节点,childIds 收纳它们(底层全部保留)。
  * 一次调用会向上连锁(加叶子→可能生 L1→可能生 L2…),按各层阈值递归。
  */
-export async function checkResummary(): Promise<number> {
+export async function checkResummary(signal?: AbortSignal): Promise<number> {
   if (!engineActiveHere()) return 0;
   const ctx = getContext();
   if (!ctx) return 0;
@@ -1673,6 +1674,7 @@ export async function checkResummary(): Promise<number> {
   const maxLevel = memory.summaries.reduce((m, s) => Math.max(m, s.level), 0);
 
   for (let level = 0; level <= maxLevel + 1; level++) {
+    if (signal?.aborted) return made;
     const threshold = thresholdForLevel(level);
     if (!threshold || threshold < 2) continue;
 
@@ -1710,7 +1712,8 @@ export async function checkResummary(): Promise<number> {
           throw new Error(raw.trim() ? `${what}失败:AI道歉或掉格式` : `${what}失败:AI空回`);
         }
         return { summary };
-      });
+      }, signal);
+      if (signal?.aborted) return made;
 
       // 生成上层节点收纳这批(**不删 batch**),时间戳取批内最新,排在它们之后
       const newCreatedAt = Math.max(...batch.map(s => s.createdAt)) + 1;
@@ -1730,6 +1733,7 @@ export async function checkResummary(): Promise<number> {
       refreshInjection();
       // 不 break:继续外层 for,上一层可能也攒够了 → 连锁压更高层
     } catch (e) {
+      if (signal?.aborted) return made;
       engineState.lastError = e instanceof Error ? e.message : String(e);
       return made; // 本层失败则停止连锁,下次再试
     }

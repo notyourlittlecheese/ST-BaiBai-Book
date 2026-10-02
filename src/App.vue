@@ -2,6 +2,7 @@
 import Icon from '@/components/Icon.vue';
 import NavBar from '@/components/NavBar.vue';
 import FloatingOrb from '@/components/FloatingOrb.vue';
+import { cancelCurrentSummary, floorBackfillState } from '@/memory/engine';
 import { getPage } from '@/pages/registry';
 import { closeBook, cycleTheme, lastOpenedAt, modalHost, THEMES, ui } from '@/state/ui';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
@@ -120,6 +121,9 @@ const windowStyle = computed(() => {
             <header class="bbs-head">
               <span class="bbs-brand-name">柏宝书</span>
               <div class="bbs-head-actions">
+                <button v-if="floorBackfillState.running" class="bbs-btn bbs-stop-current" type="button" title="停止本次摘要，不会自动将楼层标为番外" @click="cancelCurrentSummary">
+                  <Icon name="close" /> 停止摘要
+                </button>
                 <button class="bbs-icon-btn" type="button" :title="`切换主题:${nextTheme.label}`" @click="cycleTheme">
                   <Icon :name="nextTheme.icon" />
                 </button>
@@ -145,6 +149,14 @@ const windowStyle = computed(() => {
 </template>
 
 <style scoped>
+.bbs-stop-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 6px 8px;
+}
 /* —— 移动端抓手:桌面隐藏 —— */
 .bbs-grabber {
   display: none;
