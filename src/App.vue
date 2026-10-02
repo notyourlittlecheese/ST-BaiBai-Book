@@ -121,8 +121,8 @@ const windowStyle = computed(() => {
             <header class="bbs-head">
               <span class="bbs-brand-name">柏宝书</span>
               <div class="bbs-head-actions">
-                <button v-if="floorBackfillState.running" class="bbs-btn bbs-stop-current" type="button" title="停止本次摘要，不会自动将楼层标为番外" @click="cancelCurrentSummary">
-                  <Icon name="close" /> 停止摘要
+                <button v-if="floorBackfillState.running" class="bbs-icon-btn" type="button" title="停止本次摘要" aria-label="停止本次摘要" @click="cancelCurrentSummary">
+                  <Icon name="stop" />
                 </button>
                 <button class="bbs-icon-btn" type="button" :title="`切换主题:${nextTheme.label}`" @click="cycleTheme">
                   <Icon :name="nextTheme.icon" />
@@ -149,14 +149,6 @@ const windowStyle = computed(() => {
 </template>
 
 <style scoped>
-.bbs-stop-current {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-  font-size: 12px;
-  padding: 6px 8px;
-}
 /* —— 移动端抓手:桌面隐藏 —— */
 .bbs-grabber {
   display: none;

@@ -49,6 +49,7 @@ const PATHS: Record<string, string> = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.5M12 19v2.5M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M2.5 12H5M19 12h2.5M4.6 19.4l1.8-1.8M17.6 6.4l1.8-1.8"/>',
   // 关闭
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" stroke="none"/>',
   // 对勾:确认/保存
   check: '<path d="M5 12.5 10 17.5 19 7"/>',
   // 新增/加号
