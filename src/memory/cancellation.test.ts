@@ -11,7 +11,7 @@ const compiled = ts.transpileModule(functions, { compilerOptions: { target: ts.S
 
 function harness() {
   return new Function(`
-    let busy = false, currentRun = null, currentRunAbort = null;
+    let busy = false, currentRun = null, currentRunAbort = null, generationGate = null;
     let singleRunBusyOwner = null, floorBackfillOwnerRunId = null, summaryRunSeq = 0;
     const engineState = { running: false, cancelling: false, lastError: '' };
     const floorBackfillState = { running: false, floor: null, chatId: '' };

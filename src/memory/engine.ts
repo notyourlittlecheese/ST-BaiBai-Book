@@ -16,6 +16,9 @@ import { scheduleVectorIndex } from './vector';
 import { invalidateRecallCache } from './vector/cache';
 import { clearRecallInjection } from './vector/recall';
 import { reactive, watch } from 'vue';
+import { getSummaryPolicy } from './schedule';
+import { planAutomaticSummary } from './summaryPolicy';
+import { traceApi, mainApiIdentity } from '@/api/activity';
 
 function llmString(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
@@ -73,12 +76,18 @@ let singleRunBusyOwner: number | null = null;
 // 无在飞摘要时为 null。在 runSummary 头尾维护。
 let currentRun: Promise<void> | null = null;
 let currentRunAbort: AbortController | null = null;
+let generationGate: AbortController | null = null;
 let summaryRunSeq = 0;
 export function currentSummaryPromise(): Promise<void> | null {
   return currentRun;
 }
 
 export function cancelCurrentSummary(): void {
+  if (generationGate) {
+    engineState.cancelling = true;
+    generationGate.abort();
+    return;
+  }
   if (!currentRunAbort) return;
   engineState.cancelling = true;
   engineState.lastError = '摘要已停止';
@@ -534,113 +543,106 @@ export function openingPendingFloor(chat: STMessage[]): number {
   return lastAi;
 }
 
-/**
- * 生成拦截器:每次「产出新正文」的生成前,守住不变式「除最后一条 AI 外其余都必须有摘要」。
- * 判据 = holesExceptLast(末尾 AI 之前的待摘楼层),按数量分流:
- *  - 0 个 → 放行。
- *  - 恰好 1 个 → 等待正在后台生成的摘要;若事件时序未启动它,拦截器自行补这一楼。
- *    完成后重判,洞填上则启动最新稳定楼摘要;确认摘要请求已发起后放行,否则拦截。
- *  - >1 个 → 直接拦截,且不启动新的自动补摘;由用户自行选择逐楼补摘或批量补摘。
- * 拦截 = abort(true) + /sendas 插提示楼。
- *
- * 关键时序/口径(改前务必理解,否则极易复发并行 bug):
- *  1) type 口径必须与摘要触发(bindEngine 里 GENERATION_STARTED 监听器)一致——都放行
- *     continue/quiet/impersonate、都管 normal/regenerate/swipe。否则重生/翻页时「补摘」与「生成」会并行。
- *  2) GENERATION_STARTED(触发 maybeSummarizePrevAi)在 ST 中先于本拦截器 emit,且 maybeSummarizePrevAi
- *     到 runSummary 之间是同步代码、runSummary 同步置好 currentRun → 本拦截器跑时已能读到「在飞」信号。
- *  3) ST 会 await 本拦截器(script.js runGenerationInterceptors),故 await 能真正阻塞生成;
- *     且拦截器在 prompt 组装之前跑,摘要落盘后,后续组装阶段的注入自然带上新数据。
- * 跟随「自动摘要」开关:关了则一并不拦。
+/** Awaited generation gate: no body request until every due floor succeeds.
+ * Deferred floors remain visible; cancellation and unexpected errors fail closed.
+ * Automatic requests start here only, never on message-render events.
  */
 export async function handleGenerationIntercept(
   type: string | undefined,
   abort: (immediately: boolean) => void,
 ): Promise<boolean> {
-  if (!engineActiveHere()) return false; // 排除角色/总开关关:不拦
-  if (!apiSettings.autoSummaryEnabled) return false; // 自动摘要关 → 拦截一并关
-  // 要产出新正文的生成才拦:normal(发消息)/regenerate(重新生成)/swipe(翻页)。
-  // 与摘要触发(GENERATION_STARTED 监听器)同口径,否则重生/翻页时「补摘」与「生成」会并行。
-  // continue(续写)/quiet(安静)/impersonate(扮演)放行,不该被洞挡。
-  if (type === 'continue' || type === 'quiet' || type === 'impersonate') return false;
-
+  if (!engineActiveHere() || !apiSettings.autoSummaryEnabled) return false;
+  if (type === 'quiet' || type === 'impersonate') return false;
   const ctx = getContext();
-  if (!ctx) return false;
-  if (!ctx.getCurrentChatId?.()) return false; // 欢迎页:无聊天不拦
-  const chat = ctx.chat ?? [];
-  normalizeBacklogNotices(chat); // 兼容升级前已存在但尚未标记的提示楼
-  const skipLastAi = shouldSkipLastAiForGeneration(chat, type);
-
-  // 开场白特判(不拦,只等):开场白无时间标签、又还没摘时,先摘它建立时间锚点,再放行首次生成。
-  // 否则主模型与开场白摘要会各自凭空编一个开场时间,导致正文与摘要时间对不上(用户实测)。
-  // 摘完(或失败退化)即继续放行——开场白摘要失败不该挡住用户开始游戏。
-  const opening = openingPendingFloor(chat);
-  if (opening >= 0) {
-    const inflight = currentSummaryPromise();
-    if (inflight) {
-      toast('正在为开场白建立时间锚点,请稍候…', 'info');
-      await inflight; // promise 永不 reject,不会卡死生成
-    } else if (!busy) {
-      toast('正在为开场白建立时间锚点,请稍候…', 'info');
-      await runSummary(opening);
-    }
-    // 摘要落盘后 refreshInjection 已把「当前时间」刷成开场白时间;继续走洞判定(通常放行)。
-  }
-
-  let holes = holesExceptLast(chat);
-  if (holes.length < 1) {
-    // 确保最新稳定 AI 楼已进入后台摘要;只有聊天末尾实际是 AI 时才跳过正在改写的末楼。
-    // 通常事件监听器已经启动了它,busy 守卫会自动去重;这里是时序兜底。
-    void maybeSummarizePrevAi(skipLastAi);
-    return false;
-  }
-
-  // 恰好 1 个洞:优先等后台任务;若事件时序未启动且引擎空闲,拦截器自行补。
-  if (holes.length === 1) {
-    const inflight = currentSummaryPromise();
-    if (inflight) {
-      toast('正在补摘前一楼层,请稍候…', 'info');
-      await inflight;
-    } else if (!busy) {
-      toast('正在补摘前一楼层,请稍候…', 'info');
-      await runSummary(holes[0]);
-    }
-    holes = holesExceptLast(chat);
-    if (holes.length < 1) {
-      // 摘要在真正发 API 前还要异步读取世界书等上下文。若直接放行,正文生成可能抢先开始,
-      // 导致最新稳定楼的摘要请求未能启动。这里只等请求实际发起,不等摘要完成。
-      await maybeSummarizePrevAi(skipLastAi, true);
-      return false;
-    }
-  }
-
-  abort(true); // 仍有洞(>1,或那唯一的洞没在飞/补失败):立即中止
-
-  // 去重:末楼已是本提示楼就不再重复插(连点发送不刷屏)
-  const last = chat[chat.length - 1];
-  if (last && !last.is_user && typeof last.mes === 'string' && last.mes.includes(BACKLOG_NOTICE_SENTINEL)) {
+  if (!ctx?.getCurrentChatId?.()) return false;
+  if (generationGate || busy || currentRun) {
+    abort(true);
+    toast('摘要任务进行中，本次正文未发送，请稍后重试', 'info');
     return true;
   }
-
-  const exec = ctx.executeSlashCommandsWithOptions;
-  if (typeof exec === 'function') {
-    // 多行靠 {{newline}} 宏(sendMessageAs 走 substituteParams 会还原成换行)
-    const text = [
-      `【柏宝书】${BACKLOG_NOTICE_SENTINEL}`,
-      `发生了什么: 因为前面有楼层没有摘要，为了保证剧情的连续性，所以你需要先去给它补全摘要才能继续发送消息`,
-      `应该怎么做: 点开左下角魔法棒，打开柏宝书界面，在第一页的“未摘要楼层”中逐楼补摘，或使用“批量补摘”一次处理`,
-      `补全失败: 多半是API问题，多尝试不同的API`,
-      `补全成功: 在补全成功后，只需要把这一层提示楼层删掉，就可以继续正常生成了`
-    ].join('{{newline}}');
-    try {
-      await exec(`/sendas name="柏宝书" ${text}`);
-      // /sendas 产物在 ST 中是普通非用户消息(is_system=false、无 extra.type),必须主动标记,
-      // 否则它会被下一轮当成真实 AI 楼再次要求补摘。
-      normalizeBacklogNotices(chat);
-    } catch (e) {
-      engineState.lastError = `积压提示楼插入失败: ${e instanceof Error ? e.message : String(e)}`;
+  const chat = ctx.chat ?? [];
+  const chatId = ctx.getCurrentChatId() ?? '';
+  normalizeBacklogNotices(chat);
+  const skip = type === 'continue' || shouldSkipLastAiForGeneration(chat, type);
+  const ceiling = prevAiFloor(chat, skip);
+  const pending = pendingAiFloors(chat).filter(f => f <= ceiling && !manuallyHiddenAi(chat[f]));
+  const nextFloor = skip ? prevAiFloor(chat, false) : chat.length;
+  const policy = getSummaryPolicy();
+  const plan = planAutomaticSummary(policy, pending, nextFloor);
+  if (policy.mode === 'strict' && plan.due.length > 1) {
+    abort(true);
+    toast('存在多楼历史缺摘，请先手动补摘或标记不计入记忆。本次正文未发送。', 'error');
+    return true;
+  }
+  // A hidden, unsummarized floor cannot be relied on as retained context.
+  if (!plan.due.length) {
+    refreshInjection();
+    return false;
+  }
+  const ctrl = new AbortController();
+  generationGate = ctrl;
+  currentRunAbort = ctrl;
+  busy = true;
+  engineState.running = true;
+  engineState.cancelling = false;
+  engineState.lastError = '';
+  floorBackfillState.running = true;
+  floorBackfillState.chatId = chatId;
+  floorBackfillState.floor = plan.due[0];
+  let removeAbort = () => {};
+  try {
+    const stopped = new Promise<never>((_, reject) => {
+      const listener = () => reject(new Error('摘要已停止，正文未发送'));
+      ctrl.signal.addEventListener('abort', listener, { once: true });
+      removeAbort = () => ctrl.signal.removeEventListener('abort', listener);
+    });
+    const work = async () => {
+      const sender = resolveSender('summary');
+      if ('error' in sender) throw new Error(sender.error);
+      if (policy.mode === 'strict') {
+        for (const floor of plan.due) {
+          ctrl.signal.throwIfAborted();
+          floorBackfillState.floor = floor;
+          await summarizeFloorWork(chat, floor, sender, { respectHidden: true }, ctrl.signal);
+        }
+      } else {
+        // No silent per-floor fallback: a failed batch must not multiply API costs.
+        const blocks = planBatches(chat, plan.due, apiSettings.batchMaxChars, apiSettings.batchMaxFloors);
+        for (const block of blocks) {
+          ctrl.signal.throwIfAborted();
+          floorBackfillState.floor = block[0];
+          await summarizeBatchWork(chat, block, sender, ctrl.signal, true);
+        }
+      }
+      ctrl.signal.throwIfAborted();
+      if (getContext()?.chat !== chat || getContext()?.getCurrentChatId?.() !== chatId) throw new Error('聊天已切换，正文未发送');
+      if (plan.due.some(f => !leafValid(chat[f]))) throw new Error('摘要尚未全部完成，正文未发送');
+      await checkResummary(ctrl.signal);
+      ctrl.signal.throwIfAborted();
+      if (engineState.lastError) throw new Error(engineState.lastError);
+      await afterSummaryHideAndInject(chat);
+      ctrl.signal.throwIfAborted();
+    };
+    await Promise.race([work(), stopped]);
+    return false;
+  } catch (error) {
+    abort(true);
+    engineState.lastError = ctrl.signal.aborted ? '摘要已停止，正文未发送' : error instanceof Error ? error.message : String(error);
+    toast(engineState.lastError, 'error');
+    return true;
+  } finally {
+    removeAbort();
+    if (generationGate === ctrl) {
+      generationGate = null;
+      if (currentRunAbort === ctrl) currentRunAbort = null;
+      busy = false;
+      engineState.running = false;
+      engineState.cancelling = false;
+      floorBackfillState.running = false;
+      floorBackfillState.floor = null;
+      floorBackfillState.chatId = '';
     }
   }
-  return true;
 }
 
 /** 摘要后的统一收尾:按设置同步滑动隐藏 + 刷新注入。 */
@@ -1029,7 +1031,8 @@ function resolveSender(task: TaskType): SummarySender | { error: string } {
         for (const channel of channels) {
           if (signal?.aborted) throw new Error('摘要已停止');
           try {
-            return await requestCompletion(channel, messages, { signal });
+            return await traceApi(task === 'summary' ? '摘要' : '总结', channel.name, channel.model,
+              record => requestCompletion(channel, messages, { signal, onResponseModel: model => { record.responseModel = model; } }), signal);
           } catch (e) {
             if (signal?.aborted) throw new Error('摘要已停止');
             const msg = e instanceof Error ? e.message : String(e);
@@ -1047,7 +1050,10 @@ function resolveSender(task: TaskType): SummarySender | { error: string } {
   return {
     send: async (messages, signal) => {
       if (signal?.aborted) throw new Error('摘要已停止');
-      const text = await requestViaMainApi(messages);
+      const identity = await mainApiIdentity();
+      if (signal?.aborted) throw new Error('摘要已停止');
+      const text = await traceApi(task === 'summary' ? '摘要' : '总结', identity.channel, identity.model,
+        () => requestViaMainApi(messages), signal);
       if (signal?.aborted) throw new Error('摘要已停止');
       return text;
     },
@@ -1225,7 +1231,7 @@ async function summarizeFloorWork(
   chat: STMessage[],
   aiFloor: number,
   sender: SummarySender,
-  options: Pick<RunSummaryOptions, 'replaceLeaf' | 'onRequestStart'> = {},
+  options: Pick<RunSummaryOptions, 'replaceLeaf' | 'onRequestStart'> & { respectHidden?: boolean } = {},
   signal?: AbortSignal,
 ): Promise<void> {
   const ctx = getContext();
@@ -1238,6 +1244,9 @@ async function summarizeFloorWork(
   const covered = options.replaceLeaf ? coveredBeforeFloor(chat, aiFloor) : coveredSet(chat);
   const targets = floorTargets(chat, aiFloor, covered);
   const content = renderMessages(chat, targets, ctx.name1, ctx.name2);
+  const sourceText = chat[aiFloor].mes;
+  const sourceMessage = chat[aiFloor];
+  const sourceChatId = ctx.getCurrentChatId?.();
 
   // 两端标签齐才算「有标签」,提示词据此免去 AI 算时间。
   const tag = parseTimeRange(clampToTimeTags(chat[aiFloor].mes));
@@ -1301,6 +1310,9 @@ async function summarizeFloorWork(
   }, signal);
 
   if (signal?.aborted) throw new Error('摘要已停止');
+  if (getContext()?.chat !== chat || getContext()?.getCurrentChatId?.() !== sourceChatId
+    || chat[aiFloor] !== sourceMessage || chat[aiFloor].mes !== sourceText || chat[aiFloor].extra?.bbs_omit
+    || (options.respectHidden && manuallyHiddenAi(chat[aiFloor]))) throw new Error('楼层或聊天已变更，未保存本次摘要');
   applyLeafForFloor(chat, aiFloor, delta, stateBefore, options.replaceLeaf);
   engineState.lastRunAt = Date.now();
 
@@ -1404,9 +1416,14 @@ async function summarizeBatchWork(
   chat: STMessage[],
   block: number[],
   sender: SummarySender,
+  signal?: AbortSignal,
+  structured = false,
 ): Promise<void> {
   const ctx = getContext();
   if (!ctx) throw new Error('无 ST 上下文');
+  signal?.throwIfAborted();
+  const chatId = ctx.getCurrentChatId?.();
+  const originals = block.map(f => ({ message: chat[f], text: chat[f]?.mes }));
   const covered = coveredSet(chat);
 
   // 块开头之前的状态/历史/世界书(整块统一口径,只取一次)
@@ -1429,7 +1446,7 @@ async function summarizeBatchWork(
   const charCard = fetchCharCard();
   const persona = fetchUserPersona();
 
-  const prompt = buildBatchSummaryPrompt({
+  let prompt = buildBatchSummaryPrompt({
     user: ctx.name1,
     char: ctx.name2,
     time: stateBefore.state.time,
@@ -1440,6 +1457,21 @@ async function summarizeBatchWork(
   });
 
   const { checklist, prefill } = buildBatchThinking(block.length);
+  if (structured) {
+    prompt = buildSummaryPrompt({
+      user: ctx.name1, char: ctx.name2, time: stateBefore.state.time, location: stateBefore.state.location,
+      protagonist: stateBefore.protagonist, sceneFocus: stateBefore.state.sceneFocus,
+      lifeDetails: stateBefore.lifeDetails, items: stateBefore.items, itemLog: stateBefore.itemLog,
+      scenes: stateBefore.scenes, npcs: stateBefore.npcs,
+      openPlans: stateBefore.plans.filter(p => p.status === 'open'),
+      resolvedPlans: selectRecentResolvedPlans(stateBefore.plans, apiSettings.recentResolvedPlansCount),
+      history, content, hasTimeTags: false, varsState: stateBefore.vars,
+      varsMeaning: (['global', 'char', 'chat'] as const).map(t => memory.varTemplates[t].meaning).join('\n'),
+      varsRule: (['global', 'char', 'chat'] as const).map(t => memory.varTemplates[t].rule).join('\n'),
+    });
+    prompt += '\n本次为多楼批量任务。将上述单楼 JSON 输出改为 {"floors":[...]}，数组严格对应正文分隔的 ' + block.length
+      + ' 个楼段。每个元素包含该楼 summary、timeStart、timeEnd，以及该楼发生的结构化变化（含 location、主角着装、人物、物品等）。逐楼承接状态，不把最后一楼的状态写到前楼。不得省楼或合并楼。计划和生活细节的 p/d 序号始终引用批次开始时提供的列表，新添加项不要用猜测的序号更新。';
+  }
   const messages: ChatMsg[] = [];
   const jb = apiSettings.prompts.jailbreak.trim() || JAILBREAK_PROMPT;
   if (jb) messages.push({ role: 'system', content: jb });
@@ -1448,8 +1480,8 @@ async function summarizeBatchWork(
   if (worldInfo) messages.push({ role: 'system', content: buildWorldInfoSystem(worldInfo) });
   messages.push(
     { role: 'user', content: prompt },
-    { role: 'system', content: checklist },
-    { role: 'assistant', content: prefill },
+    { role: 'system', content: structured ? THINKING_CHECKLIST : checklist },
+    { role: 'assistant', content: structured ? THINKING_PREFILL : prefill },
   );
 
   // 解析 { floors: [...] };校验长度等于块楼数(缺楼/多楼都算失败,触发重试/回退)
@@ -1472,7 +1504,11 @@ async function summarizeBatchWork(
       throw new Error('批量摘要失败:有楼层缺 summary');
     }
     return cleaned as Array<SummaryDelta & { summary: string }>;
-  });
+  }, signal);
+  signal?.throwIfAborted();
+  if (getContext()?.chat !== chat || getContext()?.getCurrentChatId?.() !== chatId
+    || block.some((f, i) => chat[f] !== originals[i].message || chat[f]?.mes !== originals[i].text
+      || chat[f]?.extra?.bbs_omit || (structured && manuallyHiddenAi(chat[f])))) throw new Error('批次楼层已变更，未保存本次摘要');
 
   // 逐楼落叶(块内顺序,严格按 block 升序)。批量只取 summary + 起止时间:
   // 显式剥掉 items/plans/location —— 这些跨多楼难保顺序正确(易致计划/时间错乱),
@@ -1485,7 +1521,12 @@ async function summarizeBatchWork(
       timeEnd: r.timeEnd,
     };
     const sb = deriveMemory(chat, f);
-    applyLeafForFloor(chat, f, lean, sb);
+    // Resolve p/d references against the same lists supplied to the batch.
+    if (structured) {
+      sb.plans = stateBefore.plans;
+      sb.lifeDetails = stateBefore.lifeDetails;
+    }
+    applyLeafForFloor(chat, f, structured ? r : lean, sb);
   });
 
   engineState.lastRunAt = Date.now();
@@ -1959,26 +2000,9 @@ export function bindEngine(): void {
   normalizeBacklogNotices(ctx.chat ?? []);
   console.log('[柏宝书] bindEngine 执行,监听', et.USER_MESSAGE_RENDERED, et.GENERATION_STARTED);
 
-  // 发新消息:此刻末尾 AI 是「上一条已定稿」的回复,从最早缺口开始顺序追赶到它。
-  es.on(et.USER_MESSAGE_RENDERED, () => {
-    console.log('[柏宝书] USER_MESSAGE_RENDERED → 摘上一条 AI');
-    void maybeSummarizePrevAi(false);
-  });
-
-  // 重新生成 / 翻页:聊天末尾实际是 AI 时才视为正在改写并跳过;
-  // 末尾是用户楼时(如失败后恢复生成),前一条 AI 已稳定,仍应正常补摘。
-  // ⚠️ 这里放行的 type(quiet/impersonate/continue)必须与 handleGenerationIntercept 第一道闸严格一致——
-  //    两者口径一旦不同步,重生/翻页会出现「补摘」与「正文生成」并行(见拦截器注释的「关键时序/口径」)。
-  if (et.GENERATION_STARTED) {
-    es.on(et.GENERATION_STARTED, (type?: string, _opts?: unknown, dryRun?: boolean) => {
-      if (dryRun) return;
-      if (type === 'quiet' || type === 'impersonate' || type === 'continue') return; // 非真实新回复
-      const chat = getContext()?.chat ?? [];
-      const skipLastAi = shouldSkipLastAiForGeneration(chat, type);
-      console.log('[柏宝书] GENERATION_STARTED → 自动摘要, type =', type, '| skipLastAi =', skipLastAi);
-      void maybeSummarizePrevAi(skipLastAi);
-    });
-  }
+  // Only the awaited generation interceptor may start automatic work.
+  // Starting requests on render events bypasses failure/cancellation guarantees.
+  if (et.CHAT_CHANGED) es.on(et.CHAT_CHANGED, () => cancelCurrentSummary());
 
   // 以下三事件只让数据/UI 跟随,不主动生成摘要。
   if (et.MESSAGE_SWIPED) es.on(et.MESSAGE_SWIPED, () => reactToChatMutation());

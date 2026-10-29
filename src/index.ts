@@ -1,7 +1,12 @@
 import { hydrateSettings } from '@/api/settings';
 import { bindEngine, handleGenerationIntercept } from '@/memory/engine';
 import { runVectorRecall, shouldRecallForType } from '@/memory/vector/recall';
-import { refreshInjection } from '@/memory/inject';
+import { refreshInjection, buildHistoryInjectionText, buildStateInjectionText } from '@/memory/inject';
+import { injectionSnapshot } from '@/memory/inspection';
+import { recallDebug } from '@/memory/vector/debug';
+import { getContext } from '@/st/context';
+import { apiSettings, engineActiveHere } from '@/api/settings';
+import { timeTagPrompt } from '@/memory/timeTag';
 import { syncTimeTagRegex } from '@/memory/timeTag';
 import { bindChatLifecycle } from '@/memory/store';
 import { checkForUpdate } from '@/memory/update';
@@ -42,8 +47,19 @@ const HOST_ID = 'bbs-app-host';
     if (!intercepted && shouldRecallForType(type)) {
       await runVectorRecall();
     }
+    if (!intercepted && type !== 'quiet' && type !== 'impersonate') {
+      const active = engineActiveHere();
+      Object.assign(injectionSnapshot, {
+        chatId: getContext()?.getCurrentChatId?.() ?? '', at: Date.now(),
+        history: active ? buildHistoryInjectionText() : '',
+        state: active ? buildStateInjectionText() : '',
+        timePrompt: active && apiSettings.autoSummaryEnabled ? timeTagPrompt() : '',
+        recall: active && shouldRecallForType(type) ? recallDebug.injectedText : '',
+      });
+    }
   } catch (e) {
-    console.error('[柏宝书] 生成拦截器异常(放行本次生成)', e);
+    abort(true);
+    console.error('[柏宝书] 生成前检查异常，已取消正文请求', e);
   }
 };
 

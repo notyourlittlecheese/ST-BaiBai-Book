@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SummaryPolicy from '@/components/SummaryPolicy.vue';
 import Collapsible from '@/components/Collapsible.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import BbsSelect from '@/components/BbsSelect.vue';
@@ -1003,6 +1004,7 @@ function exportPublicApiDocument() {
 
       <!-- 摘要设置 -->
       <Collapsible title="摘要设置" :open="false">
+        <SummaryPolicy />
         <label class="bbs-switch-row">
           <span class="bbs-field-label">启用自动摘要</span>
           <input v-model="apiSettings.autoSummaryEnabled" type="checkbox" class="bbs-checkbox" />

@@ -19,13 +19,24 @@ import Icon from '@/components/Icon.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import { getContext, type STMessage } from '@/st/context';
 import { toast } from '@/st/toast';
-import { getLeaf, leafValid, deleteLeafAt, editLeafFull, planContentById, describeVarOp } from '@/memory/apply';
+import { getLeaf, leafValid, deleteLeafAt, editLeafFull as persistLeaf, invalidateSummaryAncestors, planContentById, describeVarOp } from '@/memory/apply';
+import { refreshInjection } from '@/memory/inject';
 import { engineState, floorBackfillState, regenerateFloor, setFloorOmit, summarizeFloor } from '@/memory/engine';
 import { derivedMeta } from '@/memory/store';
 import { ui } from '@/state/ui';
 import type { LeafExtra, StoredDelta, ItemDelta, NpcDelta, VarOp, JsonValue } from '@/memory/types';
 
-const props = defineProps<{ floor: number; sig: { tick: number } }>();
+const props = defineProps<{ floor: number; sig: { tick: number }; inspect?: boolean }>();
+const editLeafFull: typeof persistLeaf = (index, patch) => {
+  if (props.inspect && engineState.running) return false;
+  const id = getLeaf(getContext()?.chat?.[index])?.id;
+  const saved = persistLeaf(index, patch);
+  if (saved && props.inspect && id) {
+    invalidateSummaryAncestors(id);
+    refreshInjection();
+  }
+  return saved;
+};
 
 // —— 读当前楼消息/叶子。两个刷新源都追踪:
 //   · sig.tick:注入宿主的 ST 事件(渲染/翻页/切聊天)

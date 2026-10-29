@@ -17,6 +17,8 @@ import { buildSceneLocationIndex, classifyNpcPresence, findCurrentSceneId, getLe
 import { fmtItems, fmtPlans, fmtResolvedPlans, renderVarsState, selectRecentResolvedPlans, MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END } from './prompts';
 import { fmtNpcTiesContext } from './npcRelations';
 import { memory } from './store';
+import { getSummaryPolicy } from './schedule';
+import { pendingAiFloors } from './engine';
 import { compactTimeLabel, formatRange, latestStoryTime, splitTimeLabel, timeTagPrompt } from './timeTag';
 import { relativeTimeLabel, weekdayLabel, ageDisplay, calculateRelativeDays } from './timeRel';
 import { selectViewNodes, selectLifeDetailsForInjection, type ViewNode } from './select';
@@ -533,6 +535,12 @@ export function buildTravelDraft(target: MemScene): string {
 
 /** 组合当前结构化状态注入文本;无有意义状态时返回空串。 */
 export function buildStateInjectionText(): string {
+  if (getSummaryPolicy().mode !== 'strict') {
+    const chat = getContext()?.chat ?? [];
+    if (pendingAiFloors(chat).some(f => chat[f]?.is_system !== true)) {
+      return '[记忆时效]\n最近正文尚未结算为摘要，旧档案不代表当前地点、穿着或人物状态；以最近正文中的明确变化为准。';
+    }
+  }
   // 仅摘要模式保留内部状态供副 API、页面和公开查询使用,主模型只接收剧情摘要。
   if (apiSettings.summaryOnlyMode) return '';
 

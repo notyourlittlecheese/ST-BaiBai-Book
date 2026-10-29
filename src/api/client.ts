@@ -45,6 +45,7 @@ function alternateUrl(url: string): string {
 
 export interface RequestOptions {
   signal?: AbortSignal;
+  onResponseModel?: (model: string) => void;
 }
 
 function validTimeoutSec(value: unknown): number {
@@ -203,12 +204,13 @@ async function requestCompletionAtUrl(
 
     // 流式:按 SSE 增量拼接;非流式:直接解析 JSON。
     if (stream) {
-      const content = await readSseContent(resp);
+      const content = await readSseContent(resp, opts.onResponseModel);
       if (!content) throw new ApiError('副 API 返回空内容');
       return content;
     }
 
     const data = await resp.json();
+    if (typeof data?.model === 'string') opts.onResponseModel?.(data.model);
     if (data?.error) {
       throw new ApiError(data.error.message || '副 API 返回错误');
     }
@@ -223,11 +225,12 @@ async function requestCompletionAtUrl(
  * 读取 SSE 流(text/event-stream),拼接 delta.content。
  * ST 的 generate 端点在 stream=true 时透传上游 SSE:每行 `data: {json}`,以 `data: [DONE]` 结束。
  */
-async function readSseContent(resp: Response): Promise<string> {
+async function readSseContent(resp: Response, onModel?: (model: string) => void): Promise<string> {
   const reader = resp.body?.getReader();
   if (!reader) {
     // 无法流式读取(理论上不会):退回当作整体 JSON 处理
     const data = await resp.json().catch(() => null);
+    if (typeof data?.model === 'string') onModel?.(data.model);
     return data ? extractContent(data) : '';
   }
   const decoder = new TextDecoder();
@@ -247,6 +250,7 @@ async function readSseContent(resp: Response): Promise<string> {
       if (payload === '[DONE]') continue;
       try {
         const json = JSON.parse(payload);
+        if (typeof json?.model === 'string') onModel?.(json.model);
         if (json?.error) throw new ApiError(json.error.message || '副 API 返回错误');
         const delta = json?.choices?.[0]?.delta?.content ?? json?.choices?.[0]?.message?.content ?? json?.choices?.[0]?.text;
         if (typeof delta === 'string') out += delta;

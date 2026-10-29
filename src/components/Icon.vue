@@ -50,6 +50,7 @@ const PATHS: Record<string, string> = {
   // 关闭
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" stroke="none"/>',
+  inspection: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M7 8h6M7 11h4"/>',
   // 对勾:确认/保存
   check: '<path d="M5 12.5 10 17.5 19 7"/>',
   // 新增/加号

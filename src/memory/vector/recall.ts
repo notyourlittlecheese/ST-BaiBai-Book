@@ -210,6 +210,7 @@ export function shouldRecallForType(type: string | undefined): boolean {
 
 /** 清空召回注入槽(降级/未命中/切聊天时)。 */
 export function clearRecallInjection(): void {
+  setRecallInjected('');
   getContext()?.setExtensionPrompt?.(RECALL_INJECT_KEY, '', IN_CHAT, recallInjectionDepth(), false, ROLE_SYSTEM, null);
 }
 

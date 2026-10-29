@@ -11,6 +11,7 @@
 
 import type { VectorEndpoint } from '@/api/settings';
 import { resolveVectorModel } from '@/api/settings';
+import { traceApi } from '@/api/activity';
 
 export class EmbedError extends Error {}
 
@@ -51,7 +52,13 @@ export async function fetchWithTimeoutRetry(
     externalSignal?.addEventListener('abort', onExternalAbort);
 
     try {
-      const resp = await fetch(url, { ...init, signal: ctrl.signal });
+      let model = '(未提供)';
+      try {
+        const body = JSON.parse(String(init.body ?? '{}'));
+        model = body.model ?? body.requests?.[0]?.model ?? '(未提供)';
+      } catch { /* Non-JSON requests have no model field. */ }
+      const resp = await traceApi(label, new URL(url, window.location.href).host, model,
+        () => fetch(url, { ...init, signal: ctrl.signal }), externalSignal);
       // 5xx / 429 且还有重试机会 → 重试;其余(含 4xx)交调用方处理
       if ((resp.status >= 500 || resp.status === 429) && attempt < maxAttempts - 1) {
         lastErr = new EmbedError(`${label} API ${resp.status}`);
