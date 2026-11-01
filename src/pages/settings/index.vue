@@ -686,6 +686,16 @@ function qLabel(queryIndex: number): string {
   return queryIndex >= 0 ? `Q${queryIndex + 1}` : '—';
 }
 const TIER_LABEL: Record<'full' | 'brief' | 'drop', string> = { full: '全文', brief: '摘要', drop: '丢弃' };
+const candidateDecisions = computed(() => new Map(recallDebug.candidateDecisions.map(c => [c.leafId, c])));
+function candidateReason(leafId: string): string {
+  const c = candidateDecisions.value.get(leafId);
+  if (c?.selectionReason === 'reserve') return `Q${(c.reservedByQueryIndex ?? 0) + 1} 保底入选`;
+  if (c?.selectionReason === 'global') return '全局补齐入选';
+  return '未进入最终 rerankCandidates';
+}
+function candidateQueries(leafId: string): string {
+  return (candidateDecisions.value.get(leafId)?.matchedQueryIndices ?? []).map(i => `Q${i + 1}`).join('、');
+}
 // 状态语气:决定横幅左侧圆点的配色(成功/警示/失败/进行中)
 const recallStatusKind = computed<'ok' | 'warn' | 'fail' | 'pending'>(() => {
   const s = recallDebug.status;
@@ -1603,15 +1613,35 @@ function exportPublicApiDocument() {
             </Collapsible>
 
             <Collapsible :title="`2 · Embedding 检索 · ${recallDebug.embedding.length} 条`" :open="false">
+              <p class="bbs-field-hint">每 Q 保底上限 {{ recallDebug.reservePerQuery }} 条 · 合并前 {{ recallDebug.candidateDecisions.length }} 条不同记忆</p>
+              <p v-if="recallDebug.budgetLimited" class="bbs-field-hint">候选预算小于有结果的 Q 数，无法保证全部保底；本轮按原 Q 顺序分配。</p>
+              <details v-for="pool in recallDebug.queryPools" :key="pool.queryIndex" class="bbs-dbg-pool">
+                <summary>
+                  Q{{ pool.queryIndex + 1 }} · {{ pool.status === 'failed' ? 'Q 请求失败' : pool.status === 'empty' ? 'Q 无结果' : pool.hits.length + ' 条单路候选' }}
+                </summary>
+                <p class="bbs-field-hint">{{ recallDebug.queries[pool.queryIndex] }}</p>
+                <ul v-if="pool.hits.length" class="bbs-dbg-cards">
+                  <li v-for="(h, rank) in pool.hits" :key="h.leafId" class="bbs-dbg-card">
+                    <div class="bbs-dbg-card-top">
+                      <span class="bbs-dbg-src">第 {{ rank + 1 }} 名</span>
+                      <span class="bbs-dbg-from" :title="h.leafId">{{ h.source }}</span>
+                      <span class="bbs-dbg-num">{{ h.similarity.toFixed(3) }}</span>
+                    </div>
+                    <p class="bbs-field-hint">{{ candidateReason(h.leafId) }}</p>
+                    <p class="bbs-dbg-prev">{{ h.preview }}</p>
+                  </li>
+                </ul>
+              </details>
               <ul v-if="recallDebug.embedding.length" class="bbs-dbg-cards">
                 <li v-for="(h, i) in recallDebug.embedding" :key="i" class="bbs-dbg-card">
                   <div class="bbs-dbg-card-top">
-                    <span class="bbs-dbg-src" :title="`来源 ${qLabel(h.queryIndex)}`">{{ qLabel(h.queryIndex) }}</span>
+                    <span class="bbs-dbg-src" :title="`最高分来自 ${qLabel(h.queryIndex)}`">最高分 {{ qLabel(h.queryIndex) }}</span>
                     <span class="bbs-dbg-from" :class="{ 'is-bundle': h.source === '旧档' }">{{ h.source }}</span>
                     <span v-if="h.storyTime" class="bbs-dbg-when">【{{ h.storyTime }}】</span>
                     <span class="bbs-dbg-num">{{ h.similarity.toFixed(3) }}</span>
                   </div>
                   <div class="bbs-dbg-bar"><i :style="{ width: scorePct(h.similarity) + '%' }"></i></div>
+                  <p class="bbs-field-hint">{{ candidateReason(h.leafId) }} · 命中 {{ candidateQueries(h.leafId) }}</p>
                   <p class="bbs-dbg-prev">{{ h.preview }}</p>
                 </li>
               </ul>
@@ -2033,6 +2063,8 @@ function exportPublicApiDocument() {
 </template>
 
 <style scoped>
+.bbs-dbg-pool { margin: 10px 0; min-width: 0; }
+.bbs-dbg-pool > summary { padding: 8px 0; cursor: pointer; color: var(--bbs-ink-soft); overflow-wrap: anywhere; }
 .bbs-page {
   display: flex;
   flex-direction: column;

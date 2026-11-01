@@ -7,6 +7,7 @@
  */
 
 import { reactive } from 'vue';
+import type { SelectionReason } from './candidates';
 
 /** Embedding 检索命中(后端 max 融合后) */
 export interface RecallDebugEmbedHit {
@@ -18,6 +19,15 @@ export interface RecallDebugEmbedHit {
   source: string;
   storyTime: string;
   preview: string;
+  matchedQueryIndices?: number[];
+  selectionReason?: SelectionReason;
+  reservedByQueryIndex?: number;
+}
+
+export interface RecallDebugQueryPool {
+  queryIndex: number;
+  status: 'results' | 'empty' | 'failed';
+  hits: RecallDebugEmbedHit[];
 }
 
 /** Rerank 候选及其分档结果 */
@@ -43,13 +53,18 @@ export interface RecallDebug {
   /** 查询重写产出的多条检索 query */
   queries: string[];
   embedding: RecallDebugEmbedHit[];
+  queryPools: RecallDebugQueryPool[];
+  candidateDecisions: RecallDebugEmbedHit[];
+  reservePerQuery: number;
+  budgetLimited: boolean;
   rerank: RecallDebugRerankHit[];
   /** 最终注入主对话的文本(空 = 本回合未注入) */
   injectedText: string;
 }
 
 function empty(): RecallDebug {
-  return { at: 0, status: '', intent: '', queries: [], embedding: [], rerank: [], injectedText: '' };
+  return { at: 0, status: '', intent: '', queries: [], embedding: [], queryPools: [], candidateDecisions: [],
+    reservePerQuery: 0, budgetLimited: false, rerank: [], injectedText: '' };
 }
 
 /** 全局召回调试快照。UI 直接订阅;recall.ts 在各阶段写入。 */
@@ -81,6 +96,13 @@ export function setRecallEmbedding(hits: RecallDebugEmbedHit[]): void {
   recallDebug.embedding = hits;
 }
 
+export function setRecallCandidates(pools: RecallDebugQueryPool[], candidates: RecallDebugEmbedHit[], reservePerQuery: number, budgetLimited: boolean): void {
+  recallDebug.queryPools = pools;
+  recallDebug.candidateDecisions = candidates;
+  recallDebug.reservePerQuery = reservePerQuery;
+  recallDebug.budgetLimited = budgetLimited;
+}
+
 export function setRecallRerank(hits: RecallDebugRerankHit[]): void {
   recallDebug.rerank = hits;
 }
@@ -96,5 +118,5 @@ export function snapshotRecallDebug(): RecallDebug {
 
 /** 把缓存的调试快照还原到面板(命中缓存时用,免得 reset 后面板空白)。 */
 export function restoreRecallDebug(snap: RecallDebug): void {
-  Object.assign(recallDebug, snap);
+  Object.assign(recallDebug, empty(), snap);
 }

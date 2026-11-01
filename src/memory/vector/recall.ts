@@ -4,8 +4,8 @@
  * 管线(全程阻塞,对齐既定方案,不做预取/异步):
  *  1. 查询重写(开关开 + 配了 Query 重写模型时):小模型把当前剧情重写成 INTENT + 多条检索 Q;
  *     失败/未启用则降级为「最近上下文当单条 query」。
- *  2. 各 query 各自 embed → vec/search(scopes = 当前 chat + 各 bundle,后端多路 RRF 融合),
- *     纯按 embedding 得分取前 rerankCandidates 条(不套阈值)。
+ *  2. 各 query 各自 embed → 单 Q TopN → 轮次保底 + 全局补齐(不套阈值),
+ *     本地和后端共用同一合并层，最多送 rerankCandidates 条去精排。
  *  3. rerank 候选(用 INTENT 作 query;渠道未配则降级:跳过 rerank,用 embedding 序)。
  *  4. 分档:全文档(rerank≥阈值,取前 fullTextCount,发原文 mes_full)/ 摘要档(embedding≥阈值,发 document)。
  *  5. 按 leaf_id 去重 + 排除当前窗口内已全文的叶子 → 拼注入文本 → setExtensionPrompt。
@@ -17,6 +17,7 @@ import { getContext, type STMessage } from '@/st/context';
 import { apiSettings, engineActiveHere } from '@/api/settings';
 import type { VecHit } from '@/api/baibaoku';
 import { vecSearch } from './store';
+import { CANDIDATE_STRATEGY_VERSION } from './candidates';
 import { getLeaf, leafValid } from '../apply';
 import { MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END } from '../prompts';
 import { embedTexts, encodeFloat32Base64, rerankDocuments } from './embed';
@@ -33,6 +34,7 @@ import {
   resetRecallDebug,
   restoreRecallDebug,
   setRecallEmbedding,
+  setRecallCandidates,
   setRecallInjected,
   setRecallRerank,
   setRecallRewrite,
@@ -152,6 +154,7 @@ function saveRecallCache(cache: RecallCache): void {
  */
 function recallParamFingerprint(cfg: typeof apiSettings.vector.recall): string {
   return [
+    CANDIDATE_STRATEGY_VERSION,
     cfg.rerankCandidates,
     cfg.embeddingThreshold,
     cfg.rerankThreshold,
@@ -270,13 +273,28 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
       return;
     }
 
-    // 2) 后端检索:多路在范围内纯按 embedding 得分取前 rerankCandidates(后端 max 融合,不套阈值),排除窗口内叶子
+    // 2) 每 Q 单独检索，在全局截断前保底；排除窗口内叶子，不新增阈值。
     const exclude = windowLeafIds(chat);
     const selfScope = currentChatScope();
-    const { results } = await vecSearch(database, scopes, queryVectors, {
+    const selection = await vecSearch(database, scopes, queryVectors, {
       topK: Math.max(1, cfg.rerankCandidates),
       excludeLeafIds: exclude,
+      signal,
     });
+    const { results } = selection;
+    const debugHit = (h: VecHit) => ({
+      leafId: h.leafId, similarity: h.similarity, queryIndex: h.queryIndex,
+      source: sourceLabel(h, selfScope), storyTime: compactTimeLabel((h.storyTime || '').trim()),
+      preview: previewOf(h.document || h.mesFull),
+    });
+    setRecallCandidates(
+      selection.pools.map(p => ({ queryIndex: p.queryIndex, status: p.status, hits: p.hits.map(debugHit) })),
+      selection.candidates.map(c => ({
+        ...debugHit(c.hit), matchedQueryIndices: c.matchedQueryIndices,
+        selectionReason: c.reason, reservedByQueryIndex: c.reservedByQueryIndex,
+      })), selection.reservePerQuery, selection.budgetLimited,
+    );
+    const failedQueries = selection.pools.filter(p => p.status === 'failed').length;
     setRecallEmbedding(
       results.map(h => ({
         leafId: h.leafId,
@@ -288,7 +306,7 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
       })),
     );
     if (!results.length) {
-      setRecallStatus('未召回:检索无候选');
+      setRecallStatus(failedQueries ? '失败:部分或全部 Q 请求失败，其余 Q 无有效候选' : '未召回:所有 Q 无有效候选');
       clearRecallInjection();
       return;
     }
@@ -302,9 +320,10 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
     recordRerankDebug(ranked, tiers, selfScope);
     fn(RECALL_INJECT_KEY, text, IN_CHAT, recallInjectionDepth(), false, ROLE_SYSTEM, null);
     setRecallInjected(text);
-    setRecallStatus(text ? '召回完成' : '召回完成:无内容达标,本回合未注入');
+    setRecallStatus((text ? '召回完成' : '召回完成:无内容达标,本回合未注入')
+      + (failedQueries ? `（${failedQueries} 个 Q 请求失败，使用其余结果）` : ''));
     // 实算成功才落缓存(失败/降级路径不缓存,下次重试)。存调试快照供命中时还原面板。
-    if (cacheKey) saveRecallCache({ key: cacheKey, text, debug: snapshotRecallDebug() });
+    if (cacheKey && !failedQueries) saveRecallCache({ key: cacheKey, text, debug: snapshotRecallDebug() });
   } catch (e) {
     console.warn('[柏宝书向量] 召回失败(降级为不召回):', e);
     setRecallStatus(`失败:${e instanceof Error ? e.message : String(e)}`);

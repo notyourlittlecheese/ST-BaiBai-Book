@@ -27,6 +27,7 @@ import {
   type VecHit,
 } from '@/api/baibaoku';
 import { decodeFloat32Base64 } from './embed';
+import { searchQueryCandidates, type CandidateSelection } from './candidates';
 
 type SearchOpts = { topK?: number; excludeLeafIds?: string[] };
 
@@ -348,9 +349,12 @@ export async function vecSearch(
   database: string,
   scopes: string[],
   queryVectors: string[],
-  opts: SearchOpts = {},
-): Promise<{ results: VecHit[] }> {
-  return (await getVectorStore()).search(database, scopes, queryVectors, opts);
+  opts: SearchOpts & { signal?: AbortSignal } = {},
+): Promise<CandidateSelection> {
+  opts.signal?.throwIfAborted();
+  const store = await getVectorStore();
+  return searchQueryCandidates(queryVectors, opts.topK ?? 20, scopes, opts.excludeLeafIds ?? [],
+    (vector, topK) => store.search(database, scopes, [vector], { topK, excludeLeafIds: opts.excludeLeafIds }), opts.signal);
 }
 
 export async function vecReconcile(
