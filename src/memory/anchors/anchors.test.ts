@@ -39,7 +39,8 @@ describe('highlight validation, settlement and real source integration', () => {
     expect(() => settlePending(true)).toThrow('时间线');
     anchors.pending.forEach(p => p.selected = true); settlePending(true);
     expect(anchorEntries()).toHaveLength(2);
-    expect(anchorText()).toContain('Ref:evt_');
+    expect(anchorText()).not.toContain('Ref:');
+    expect(anchorEntries().find(e => e.key === 'UserToChar')?.ref).toMatch(/^evt_/);
   });
   it('rejects CHAR evidence pretending to be USER input', () => {
     setup(); const raw = relation(); raw.changes[1].evidenceFloor = 1;
@@ -86,7 +87,9 @@ describe('highlight validation, settlement and real source integration', () => {
     endAnchorBatch(true);
     expect(anchors.error).toBe(''); expect(anchors.pending).toHaveLength(2);
     expect(anchors.pending.find(p => p.event.entry.key === 'Stage')?.event.entry.ref).toBe(id);
-    settlePending(true); expect(anchorText()).toContain('Ref:' + id);
+    settlePending(true);
+    expect(anchorEntries().find(e => e.key === 'Stage')?.ref).toBe(id);
+    expect(anchorText()).not.toContain(id!);
   });
   it('review holds generation until accepted or explicitly skipped', async () => {
     setup(); receiveAnchors(relation(), [1]); let returned = false;

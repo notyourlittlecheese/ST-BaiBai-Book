@@ -51,12 +51,13 @@ export function replay(data: Data, sources: Source[]): Map<string, Entry> {
 export function render(data: Data, sources: Source[]): Record<Module, string> {
   const entries = [...replay(data, sources).values()];
   const visible = entries.filter(e => e.value && data.modules[e.module] && policy(data, e).visible);
-  const timeline = new Set(visible.filter(e => e.module === 'long_term_timeline').map(e => e.id));
   return Object.fromEntries(MODULES.map(module => {
     const order = data.sequence?.[module] ?? [];
     const rows = visible.filter(e => e.module === module).sort((a,b) => (order.includes(a.id) ? order.indexOf(a.id) : order.length) - (order.includes(b.id) ? order.indexOf(b.id) : order.length)).map(e => {
-      const ref = e.ref && timeline.has(e.ref) ? ` | Ref:${e.ref}` : '';
-      return `[${module === 'long_term_timeline' || module === 'relation_facts' ? e.id : e.key}${e.date ? ' | ' + e.date : ''} | ${e.value}${ref}]`;
+      // Database identifiers and references remain available to governance/extraction,
+      // but add no useful prose context to the body-writing model.
+      const heading = module === 'long_term_timeline' || module === 'relation_facts' ? '' : e.key;
+      return `[${[heading, e.date, e.value].filter(Boolean).join(' | ')}]`;
     });
     return [module, data.enabled && data.display && rows.length ? `<${module}>\n${rows.join('\n')}\n</${module}>` : ''];
   })) as Record<Module, string>;

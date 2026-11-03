@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import ModalMask from '@/components/ModalMask.vue';
 import { anchors, syncAnchors, saveAnchors, anchorEntries, anchorText, newEntry, manualEntry, setEntryPolicy, policy, sources, activeSources, orphanedManual, MODULES, LABELS, FIELDS, ENUMS, render, type Entry, type Module, type Control } from '@/memory/anchors';
 import { derivedMeta, memory } from '@/memory/store';
 import { planAnchorHistory, historyPayload, DEFAULT_HISTORY_CHARS } from '@/memory/anchors/history';
@@ -123,31 +124,38 @@ async function initialize() {
       <select v-if="selectedModule === 'relationship_status' || selectedModule === 'current_scene'" v-model="selectedKey"><option v-for="k in fixedKeys" :key="k" :value="k">{{ FIELDS[k] }}</option></select>
       <button type="button" @click="add">填写</button>
     </fieldset>
-    <fieldset v-if="edit" :disabled="busy"><legend>编辑（空值不发送；权限保持不变）</legend>
+    <ModalMask :open="!!edit" @close="edit = null">
+    <fieldset v-if="edit" class="anchor-dialog" role="dialog" aria-modal="true" aria-label="编辑重点记录" :disabled="busy"><legend>编辑（空值不发送；权限保持不变）</legend>
+      <p v-if="error" role="alert">{{ error }}</p>
       <label>剧情日期 <input v-model="edit.date"></label>
       <label v-if="edit.module === 'long_term_timeline'">插入位置 <select v-model="insertion"><option value="__keep">保持当前位置</option><option value="__start">最前</option><option value="__end">最后</option><option v-for="e in ordered('long_term_timeline').filter(x => x.id !== edit?.id)" :key="e.id" :value="e.id">在 {{ e.date }} {{ e.value }} 之后</option></select></label>
-      <select v-if="ENUMS[edit.key] && edit.value !== null" v-model="edit.value"><option v-for="v in ENUMS[edit.key]" :key="v">{{ v }}</option></select>
+      <select v-if="ENUMS[edit.key] && edit.value !== null" v-model="edit.value" aria-label="重点内容"><option v-if="!ENUMS[edit.key].includes(edit.value)" :value="edit.value">{{ edit.value || '空' }}（当前值）</option><option v-for="v in ENUMS[edit.key]" :key="v">{{ v }}</option></select>
       <textarea v-else-if="edit.value !== null" v-model="edit.value" rows="4" aria-label="重点内容" />
       <p v-else>空值</p>
       <label>来源时间线 <select v-model="edit.ref"><option :value="undefined">未建立引用</option><option v-for="e in entries.filter(x => x.module === 'long_term_timeline')" :key="e.id" :value="e.id">{{ e.date }} {{ e.value }}</option></select></label>
       <button type="button" @click="edit.value = edit.value === null ? '' : null">{{ edit.value === null ? '填写内容' : '清空' }}</button>
       <button type="button" @click="commit">保存</button><button type="button" @click="edit = null">取消</button>
     </fieldset>
-    <fieldset v-if="linked" :disabled="busy"><legend>选择仍要向正文显示的关联状态</legend>
+    </ModalMask>
+    <ModalMask :open="!!linked" @close="linked = null">
+    <fieldset v-if="linked" class="anchor-dialog" role="dialog" aria-modal="true" aria-label="关联状态显示设置" :disabled="busy"><legend>选择仍要向正文显示的关联状态</legend>
       <p>将隐藏：{{ linked.value }}。以下未勾选项也会隐藏，来源仍保留。</p>
       <label v-for="e in linkedEntries" :key="e.id"><input v-model="keep" type="checkbox" :value="e.id">向正文显示 {{ FIELDS[e.key] || e.key }}：{{ e.value }}</label>
       <button type="button" @click="applyLinked">确认显示选择</button><button type="button" @click="linked = null">取消</button>
     </fieldset>
-    <fieldset v-if="deleteTarget" :disabled="busy"><legend>删除重点记录？</legend><p>{{ deleteTarget.value }}。普通摘要不变；引用它的状态值保留，引用解除。</p><button type="button" @click="remove">确认删除</button><button type="button" @click="deleteTarget = null">取消</button></fieldset>
+    </ModalMask>
+    <ModalMask :open="!!deleteTarget" @close="deleteTarget = null">
+    <fieldset v-if="deleteTarget" class="anchor-dialog" role="dialog" aria-modal="true" aria-label="删除重点记录" :disabled="busy"><legend>删除重点记录？</legend><p>{{ deleteTarget.value }}。普通摘要不变；引用它的状态值保留，引用解除。</p><button type="button" @click="remove">确认删除</button><button type="button" @click="deleteTarget = null">取消</button></fieldset>
+    </ModalMask>
     <section v-for="m in MODULES" :key="m">
       <h3>{{ LABELS[m] }} · 估算 {{ estimate(parts[m]) }} tokens</h3>
       <p v-if="!ordered(m).length">暂无记录</p>
       <article v-for="e in ordered(m)" :key="e.id">
-        <strong>{{ FIELDS[e.key] || e.id }}</strong><small>{{ e.date }}</small><p>{{ e.value ?? '空（不发送）' }}</p>
+        <strong>{{ FIELDS[e.key] || LABELS[e.module] }}</strong><small>{{ e.date }}</small><p>{{ e.value ?? '空（不发送）' }}</p>
         <fieldset :disabled="busy">
           <label><input type="checkbox" :checked="policy(anchors.data, e).visible" @change="display(e, ($event.target as HTMLInputElement).checked)">向正文显示</label>
           <select :value="policy(anchors.data, e).control" aria-label="修改权限" @change="setting(e, ($event.target as HTMLSelectElement).value as Control, policy(anchors.data, e).visible)"><option value="SUGGEST">SUGGEST · 审核后更新</option><option value="AUTO">AUTO · 自动更新</option><option value="LOCKED">LOCKED · 仅手动修改</option></select>
-          <button type="button" @click="edit = { ...e }; insertion = '__keep'">编辑／清空</button><button type="button" @click="deleteTarget = e">删除</button>
+          <button type="button" @click="error = ''; edit = { ...e }; insertion = '__keep'">编辑／清空</button><button type="button" @click="deleteTarget = e">删除</button>
           <template v-if="m === 'long_term_timeline'"><button type="button" @click="move(e, -1)">上移</button><button type="button" @click="move(e, 1)">下移</button></template>
         </fieldset>
         <details><summary>来源与引用</summary><p>引用：{{ e.ref || '无' }}{{ e.ref && !entries.some(x => x.id === e.ref) ? '（来源已失效）' : '' }}</p><p v-for="s in anchors.data.events.filter(x => x.entry.id === e.id).at(-1)?.sources ?? []" :key="s.id">{{ s.id.startsWith('input:') ? '用户原文' : '摘要' }}来源 #{{ s.floor }} · {{ s.id }}</p></details>
@@ -160,4 +168,9 @@ async function initialize() {
 <style scoped>
 .anchors-page { padding:16px; } fieldset { border:1px solid var(--bbs-line); border-radius:10px; padding:12px; margin:12px 0; display:flex; flex-wrap:wrap; gap:10px; min-width:0; } label { display:flex; align-items:center; gap:6px; flex-wrap:wrap; } article { border-top:1px solid var(--bbs-line); padding:12px 0; overflow-wrap:anywhere; } p,pre { white-space:pre-wrap; overflow-wrap:anywhere; } textarea { width:100%; box-sizing:border-box; } select,input { max-width:100%; } button { padding:6px 10px; } small { margin-left:8px; } input[type=number] { width:90px; }
 button,select,textarea,input:not([type=checkbox]) { background:var(--bbs-surface-2); color:var(--bbs-ink); border:1px solid var(--bbs-line); border-radius:6px; padding:7px; }
+.anchor-dialog { box-sizing:border-box; width:min(640px,94vw); max-height:82vh; max-height:82dvh; overflow-y:auto; overscroll-behavior:contain; background:var(--bbs-surface); color:var(--bbs-ink); padding:18px; margin:0; box-shadow:0 12px 40px #0003; }
+.anchor-dialog legend { background:var(--bbs-surface); padding:4px 8px; border-radius:6px; }
+.anchor-dialog label,.anchor-dialog p { width:100%; }
+.anchor-dialog select { min-width:0; width:100%; }
+.anchor-dialog textarea { min-height:160px; resize:vertical; }
 </style>

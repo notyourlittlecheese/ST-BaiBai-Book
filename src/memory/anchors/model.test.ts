@@ -35,7 +35,17 @@ describe('highlight event replay and injection', () => {
     expect(render(d, [s1]).long_term_timeline).toBe('');
     expect(replay(d, [s1]).get(entry('').id)?.ref).toBe(t.id);
     d.policies[t.id].visible = true;
-    expect(render(d, [s1]).relationship_status).toContain('Ref:evt_1');
+    const output = Object.values(render(d, [s1])).join('\n');
+    expect(output).toContain('吵架');
+    expect(output).not.toContain('evt_1');
+    expect(output).not.toContain('Ref:');
+    expect(replay(d, [s1]).get(entry('').id)?.ref).toBe(t.id);
+  });
+  it('renders fact content and dates without exposing storage IDs', () => {
+    const d = emptyData(); d.enabled = true;
+    d.events = [{ ...event('', s1), entry: { id: 'fact_private_id', module: 'relation_facts', key: '', value: '双方已经见过面', date: '2026/3/5' } }];
+    expect(render(d, [s1]).relation_facts).toBe('<relation_facts>\n[2026/3/5 | 双方已经见过面]\n</relation_facts>');
+    expect(replay(d, [s1]).has('fact_private_id')).toBe(true);
   });
   it('module toggles and master switch preserve individual visibility', () => {
     const d = emptyData(); d.enabled = true; d.events = [event('稳定', s2)];
