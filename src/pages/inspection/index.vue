@@ -126,8 +126,8 @@ function save() {
       <p class="bbs-field-hint">柏宝书生成前注入快照，不含其他插件、角色卡和酒馆最终裁剪。仅本次会话保存。</p>
       <template v-if="snapshot">
         <p>{{ new Date(snapshot.at).toLocaleString() }}</p>
-        <details v-for="part in (['state', 'history', 'recall', 'timePrompt'] as const)" :key="part" open>
-          <summary>{{ { state: '状态', history: '历史摘要', recall: '向量召回', timePrompt: '时间规则' }[part] }}</summary>
+        <details v-for="part in (['state', 'history', 'recall', 'timePrompt', 'anchors'] as const)" :key="part" open>
+          <summary>{{ { state: '状态', history: '历史摘要', recall: '向量召回', timePrompt: '时间规则', anchors: '重点提示' }[part] }}</summary>
           <pre>{{ snapshot[part] || '（未注入）' }}</pre>
         </details>
       </template>

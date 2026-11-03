@@ -6,6 +6,7 @@ import Settings from './settings/index.vue';
 import Summary from './summary/index.vue';
 import Vars from './vars/index.vue';
 import Inspection from './inspection/index.vue';
+import Anchors from './anchors/index.vue';
 
 export interface PageDef {
   /** 唯一 id,存进 ui.activePage / localStorage;同时作为 Icon 的 name */
@@ -28,6 +29,7 @@ export const PAGES: PageDef[] = [
   { id: 'npcs', label: '角色', component: Npcs },
   { id: 'vars', label: '变量', component: Vars },
   { id: 'inspection', label: '记忆检查', component: Inspection },
+  { id: 'anchors', label: '重点提示', component: Anchors },
   { id: 'settings', label: '设置', component: Settings },
 ];
 

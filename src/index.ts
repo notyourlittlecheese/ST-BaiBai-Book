@@ -4,6 +4,7 @@ import { runVectorRecall, shouldRecallForType } from '@/memory/vector/recall';
 import { refreshInjection, buildHistoryInjectionText, buildStateInjectionText } from '@/memory/inject';
 import { injectionSnapshot } from '@/memory/inspection';
 import { recallDebug } from '@/memory/vector/debug';
+import { anchors, anchorText, reviewBeforeGeneration } from '@/memory/anchors';
 import { getContext } from '@/st/context';
 import { apiSettings, engineActiveHere } from '@/api/settings';
 import { timeTagPrompt } from '@/memory/timeTag';
@@ -42,6 +43,10 @@ const HOST_ID = 'bbs-app-host';
   try {
     // 先走积压拦截:返回 true = 已 abort 本次生成,无需召回(生成不会发生)。
     const intercepted = await handleGenerationIntercept(type, abort);
+    if (!intercepted && engineActiveHere() && type !== 'quiet' && type !== 'impersonate') {
+      if (anchors.running || !(await reviewBeforeGeneration())) { abort(true); return; }
+      refreshInjection();
+    }
     // 放行且该类型需要召回 → 阻塞式向量召回(写注入槽后再放行生成)。
     // 召回内部自带向量开关/可用性判断,失败静默降级,绝不影响生成。
     if (!intercepted && shouldRecallForType(type)) {
@@ -55,6 +60,7 @@ const HOST_ID = 'bbs-app-host';
         state: active ? buildStateInjectionText() : '',
         timePrompt: active && apiSettings.autoSummaryEnabled ? timeTagPrompt() : '',
         recall: active && shouldRecallForType(type) ? recallDebug.injectedText : '',
+        anchors: active ? anchorText() : '',
       });
     }
   } catch (e) {

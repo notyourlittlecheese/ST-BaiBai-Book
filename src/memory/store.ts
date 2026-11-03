@@ -1,6 +1,7 @@
 import { apiSettings, currentCharKey } from '@/api/settings';
 import { getContext, type STMessage } from '@/st/context';
 import { reactive } from 'vue';
+import { syncAnchors } from './anchors';
 import { deriveMemory, getLeaf, leafValid } from './apply';
 import { isAiFloor, pendingAiFloors } from './engine';
 import { latestStoryTime } from './timeTag';
@@ -105,6 +106,7 @@ export function recomputeDerived(): void {
   // 待摘要楼层(AI 楼且无有效叶子),供摘要页「未摘要楼层」列表逐楼补摘
   derivedMeta.pendingFloors = chat ? pendingAiFloors(chat) : [];
   derivedMeta.rev++; // 通知外部视图(楼内面板)派生已刷新
+  syncAnchors();
 }
 
 /* ============ 落盘:叶子在 chat 文件,森林在 metadata ============ */

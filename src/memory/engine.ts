@@ -19,6 +19,71 @@ import { reactive, watch } from 'vue';
 import { getSummaryPolicy } from './schedule';
 import { planAutomaticSummary } from './summaryPolicy';
 import { traceApi, mainApiIdentity } from '@/api/activity';
+import { anchors, anchorPrompt, receiveAnchors, parseAnchorProposal, sources as anchorSources, syncAnchors, type Data } from './anchors';
+import { replay as replayAnchors, type Proposal as AnchorProposal } from './anchors/model';
+import { beginAnchorBatch, endAnchorBatch, activeSources as anchorActiveSources } from './anchors';
+
+/** Explicit paid initialization, using corrected leaf summaries only. No intermediate state is published. */
+export async function initializeAnchors(start: number, end: number, signal?: AbortSignal): Promise<void> {
+  syncAnchors();
+  if (!engineActiveHere() || busy || currentRun || anchors.running) throw new Error('请等待当前摘要任务结束');
+  if (!anchors.data.enabled || !anchors.data.updating) throw new Error('请先启用重点提示和随摘要更新');
+  if (anchors.pending.length) throw new Error('请先处理已有待审核提案');
+  const selected = anchorSources().filter(s => s.floor >= start && s.floor <= end);
+  if (!selected.length) throw new Error('此范围没有有效单楼摘要');
+  const sender = resolveSender('summary');
+  if ('error' in sender) throw new Error(sender.error);
+  const chat = getContext()?.chat;
+  const chatId = anchors.chatId;
+  const revision = anchors.data.revision;
+  const draft: Data = JSON.parse(JSON.stringify(anchors.data));
+  const original = replayAnchors(draft, anchorActiveSources());
+  const collected = new Map<string, AnchorProposal>();
+  anchors.running = true;
+  try {
+    const blocks: typeof selected[] = [];
+    let part: typeof selected = []; let chars = 0;
+    for (const s of selected) {
+      if (part.length && (chars + s.text.length > 12000 || part.length >= 12)) { blocks.push(part); part = []; chars = 0; }
+      part.push(s); chars += s.text.length;
+    }
+    if (part.length) blocks.push(part);
+    for (let i = 0; i < blocks.length; i++) {
+      signal?.throwIfAborted();
+      anchors.progress = `读取摘要 ${i + 1}/${blocks.length} 批；完成后统一审核`;
+      const block = blocks[i];
+      const prompt = '根据以下已由用户校对的单楼摘要补充重点记录，仅返回 {"anchors":{...}}。不重新生成摘要。用户原话未知时不要伪造引用。\n'
+        + JSON.stringify(block.map(s => ({ floor: s.floor, summary: s.text })))
+        + anchorPrompt(block.map(s => s.floor), true, draft);
+      // One paid request per block; no implicit retries or per-floor fallback.
+      let stop: (() => void) | undefined;
+      const request = sender.send([{ role: 'user', content: prompt }], signal);
+      const raw = await (signal ? Promise.race([
+        request,
+        new Promise<never>((_, reject) => {
+          stop = () => reject(new Error('重点补充已停止，未保存中间状态'));
+          signal.addEventListener('abort', stop, { once: true });
+          if (signal.aborted) stop();
+        }),
+      ]).finally(() => { if (stop) signal.removeEventListener('abort', stop); }) : request);
+      signal?.throwIfAborted();
+      if (getContext()?.chat !== chat || getContext()?.getCurrentChatId?.() !== chatId || anchors.data.revision !== revision) throw new Error('聊天或重点设置已变化，本次补充未保存');
+      const active = anchorSources();
+      if (selected.some(s => !active.some(a => a.id === s.id && a.text === s.text))) throw new Error('来源摘要已变化，本次补充未保存');
+      const proposals = parseAnchorProposal(extractJsonObject<{ anchors?: unknown }>(raw)?.anchors, block.map(s => s.floor), true, draft);
+      for (const p of proposals) {
+        const earlier = collected.get(p.event.entry.id);
+        if (earlier) p.event.sources = [...new Map([...earlier.event.sources, ...p.event.sources].map(s => [s.id, s])).values()];
+        p.before = original.get(p.event.entry.id)?.value ?? null;
+        collected.set(p.event.entry.id, p);
+        draft.events.push({ ...p.event, order: draft.events.length + Date.now() });
+      }
+    }
+    anchors.pending = [...collected.values()];
+    anchors.reviewOpen = anchors.pending.length > 0;
+    anchors.error = '';
+  } finally { anchors.running = false; anchors.progress = ''; }
+}
 
 function llmString(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
@@ -555,7 +620,7 @@ export async function handleGenerationIntercept(
   if (type === 'quiet' || type === 'impersonate') return false;
   const ctx = getContext();
   if (!ctx?.getCurrentChatId?.()) return false;
-  if (generationGate || busy || currentRun) {
+  if (generationGate || busy || currentRun || anchors.running) {
     abort(true);
     toast('摘要任务进行中，本次正文未发送，请稍后重试', 'info');
     return true;
@@ -581,6 +646,7 @@ export async function handleGenerationIntercept(
   }
   const ctrl = new AbortController();
   generationGate = ctrl;
+  beginAnchorBatch();
   currentRunAbort = ctrl;
   busy = true;
   engineState.running = true;
@@ -624,8 +690,10 @@ export async function handleGenerationIntercept(
       ctrl.signal.throwIfAborted();
     };
     await Promise.race([work(), stopped]);
+    endAnchorBatch(true);
     return false;
   } catch (error) {
+    endAnchorBatch(false);
     abort(true);
     engineState.lastError = ctrl.signal.aborted ? '摘要已停止，正文未发送' : error instanceof Error ? error.message : String(error);
     toast(engineState.lastError, 'error');
@@ -752,9 +820,11 @@ export async function setFloorOmit(floor: number, on: boolean): Promise<void> {
   if (already === on) return; // 幂等
 
   if (on) {
-    m.extra = { ...(m.extra ?? {}), bbs_omit: true };
+    m.extra = { ...(m.extra ?? {}), bbs_omit: true, bbs_omit_hidden: !m.is_system };
+    m.is_system = true;
   } else {
-    const { bbs_omit: _omit, ...rest } = m.extra ?? {};
+    if (m.extra?.bbs_omit_hidden) m.is_system = false;
+    const { bbs_omit: _omit, bbs_omit_hidden: _hidden, ...rest } = m.extra ?? {};
     m.extra = rest;
   }
 
@@ -762,6 +832,8 @@ export async function setFloorOmit(floor: number, on: boolean): Promise<void> {
   recomputeDerived();
   await syncHiddenNow(); // 内部据 engineActiveHere/autoSummary 决定是否同步隐藏,并刷新注入
   scheduleLeafFlush();
+  invalidateRecallCache();
+  scheduleVectorIndex();
 }
 
 /** 批量标记番外。用于把一段已确认不进主线的未摘要楼一次性排除,不调用 API。 */
@@ -776,14 +848,18 @@ export async function setFloorsOmit(floors: number[], on: boolean): Promise<numb
     const already = !!m.extra?.bbs_omit;
     if (already === on) continue;
     if (on) {
-      m.extra = { ...(m.extra ?? {}), bbs_omit: true };
+      m.extra = { ...(m.extra ?? {}), bbs_omit: true, bbs_omit_hidden: !m.is_system };
+      m.is_system = true;
     } else {
-      const { bbs_omit: _omit, ...rest } = m.extra ?? {};
+      if (m.extra?.bbs_omit_hidden) m.is_system = false;
+      const { bbs_omit: _omit, bbs_omit_hidden: _hidden, ...rest } = m.extra ?? {};
       m.extra = rest;
     }
     changed++;
   }
   if (!changed) return 0;
+  invalidateRecallCache();
+  scheduleVectorIndex();
   recomputeDerived();
   await syncHiddenNow();
   scheduleLeafFlush();
@@ -931,6 +1007,7 @@ async function syncWindowHiddenState(chat: STMessage[]): Promise<void> {
   for (let i = 0; i < chat.length; i++) {
     const m = chat[i];
     if (!m) continue;
+    if (m.extra?.bbs_omit) { m.is_system = true; continue; }
     // 用户明确把一段旧剧情交给“导入历史”接管时,整段都隐藏,不再受最近窗口保留数影响,
     // 否则导入正文会与窗口内旧原文重复注入。删除导入节点后会自动走下面的 unhide。
     const shouldHide = covered.has(i) && (i < keepStart || floorInImportedRanges(i, imported));
@@ -1293,7 +1370,7 @@ async function summarizeFloorWork(
   if (persona) messages.push({ role: 'system', content: buildPersonaSystem(persona) });
   if (worldInfo) messages.push({ role: 'system', content: buildWorldInfoSystem(worldInfo) });
   messages.push(
-    { role: 'user', content: prompt },
+    { role: 'user', content: prompt + anchorPrompt([aiFloor]) + (anchors.data.enabled && anchors.data.updating ? '\n用户原文定位：' + JSON.stringify(targets.filter(f => chat[f]?.is_user && !chat[f]?.extra?.bbs_omit).map(f => ({ floor: f, input: chat[f].mes }))) : '') },
     { role: 'system', content: THINKING_CHECKLIST },
     { role: 'assistant', content: THINKING_PREFILL },
   );
@@ -1314,6 +1391,7 @@ async function summarizeFloorWork(
     || chat[aiFloor] !== sourceMessage || chat[aiFloor].mes !== sourceText || chat[aiFloor].extra?.bbs_omit
     || (options.respectHidden && manuallyHiddenAi(chat[aiFloor]))) throw new Error('楼层或聊天已变更，未保存本次摘要');
   applyLeafForFloor(chat, aiFloor, delta, stateBefore, options.replaceLeaf);
+  receiveAnchors((delta as unknown as { anchors?: unknown }).anchors, [aiFloor]);
   engineState.lastRunAt = Date.now();
 
   // 立刻反映到派生与注入;落盘走防抖(隐藏由收尾的 syncWindowHiddenState 统一负责)
@@ -1324,6 +1402,7 @@ async function summarizeFloorWork(
 }
 
 async function runSummaryInner(aiFloor: number, options: RunSummaryOptions = {}): Promise<void> {
+  if (anchors.running) { toast('重点初始化进行中，请先完成或停止', 'info'); return; }
   if (!engineActiveHere()) { console.log('[柏宝书] runSummary 早退:插件总开关关闭或当前角色被排除'); return; }
   if (busy) { console.log('[柏宝书] runSummary 早退:busy'); return; }
   const sender = resolveSender('summary');
@@ -1479,7 +1558,7 @@ async function summarizeBatchWork(
   if (persona) messages.push({ role: 'system', content: buildPersonaSystem(persona) });
   if (worldInfo) messages.push({ role: 'system', content: buildWorldInfoSystem(worldInfo) });
   messages.push(
-    { role: 'user', content: prompt },
+    { role: 'user', content: prompt + anchorPrompt(block) + (anchors.data.enabled && anchors.data.updating ? '\n每个floors元素各含自己的anchors；实际楼号依次为' + JSON.stringify(block) + '\n用户原文定位：' + JSON.stringify(allTargets.filter(f => chat[f]?.is_user && !chat[f]?.extra?.bbs_omit).map(f => ({ floor: f, input: chat[f].mes }))) : '') },
     { role: 'system', content: structured ? THINKING_CHECKLIST : checklist },
     { role: 'assistant', content: structured ? THINKING_PREFILL : prefill },
   );
@@ -1528,6 +1607,7 @@ async function summarizeBatchWork(
     }
     applyLeafForFloor(chat, f, structured ? r : lean, sb);
   });
+  block.forEach((f, idx) => receiveAnchors((list[idx] as unknown as { anchors?: unknown }).anchors, [f]));
 
   engineState.lastRunAt = Date.now();
   recomputeDerived();
@@ -1547,6 +1627,7 @@ async function summarizeBatchWork(
  * 全部完成后触发 checkResummary(连锁 L1/L2)+ 收尾(隐藏 + 注入)。
  */
 export async function batchBackfill(opts: BatchBackfillOpts = {}): Promise<BatchBackfillResult> {
+  if (anchors.running) return { done: 0, total: 0, cancelled: false };
   if (!engineActiveHere()) return { done: 0, total: 0, cancelled: false };
   if (busy) return { done: 0, total: 0, cancelled: false };
   const sender = resolveSender('summary');
@@ -1578,6 +1659,7 @@ export async function batchBackfill(opts: BatchBackfillOpts = {}): Promise<Batch
   batchState.cancelRequested = false;
   batchState.done = 0;
   batchState.total = total;
+  beginAnchorBatch();
   let done = 0;
   let cancelled = false;
   try {
@@ -1606,6 +1688,7 @@ export async function batchBackfill(opts: BatchBackfillOpts = {}): Promise<Batch
   } catch (e) {
     engineState.lastError = e instanceof Error ? e.message : String(e);
   } finally {
+    endAnchorBatch(!cancelled && done === total && !engineState.lastError);
     busy = false;
     engineState.running = false;
     batchState.running = false;

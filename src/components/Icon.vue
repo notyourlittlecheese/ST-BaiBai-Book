@@ -11,6 +11,7 @@ const props = defineProps<{ name: string; size?: number | string }>();
 
 // 仅放路径数据,统一的 svg 外壳在模板里。stroke 风格。
 const PATHS: Record<string, string> = {
+  anchors: '<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 17l-5.2 2.6 1-5.8-4.3-4.1 5.9-.9z"/>',
   // 摘要:文档 + 文本行
   summary:
     '<path d="M6 3.5h8.5L19 8v12.5H6z"/><path d="M14 3.5V8h4.5"/><path d="M9 12.5h6M9 16h6M9 9h2"/>',

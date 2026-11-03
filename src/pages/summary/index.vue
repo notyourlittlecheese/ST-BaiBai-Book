@@ -734,10 +734,24 @@ function floorLabel(r: SummaryRow): string {
   return r.floorLo === r.floorHi ? `#${r.floorLo}` : `#${r.floorLo} - #${r.floorHi}`;
 }
 
+const leafDeleteOpen = ref(false);
+const leafDeleteTarget = ref<{ row: SummaryRow; chatId: string } | null>(null);
+const leafRetain = ref(true);
+async function confirmLeafDelete() {
+  const target = leafDeleteTarget.value;
+  if (!target || engineState.running) return;
+  leafDeleteOpen.value = false;
+  if (getContext()?.getCurrentChatId?.() !== target.chatId || !derivedMeta.leaves.some(l => l.id === target.row.id && l.msgIndex === target.row.msgIndex)) return;
+  if (typeof target.row.msgIndex === 'number') {
+    deleteLeafAt(target.row.msgIndex);
+    if (!leafRetain.value) await setFloorOmit(target.row.msgIndex, true);
+  }
+  refreshInjection(); leafDeleteTarget.value = null;
+}
 async function onDelete(r: SummaryRow) {
   if (r.kind === 'leaf') {
-    if (!confirm('删除这条摘要?它带来的物品、计划、时间地点变化会按剩余摘要重新计算(可能回退);包含它的总结也会一并删除。原文楼层仍保持隐藏。')) return;
-    if (typeof r.msgIndex === 'number') deleteLeafAt(r.msgIndex);
+    leafDeleteTarget.value = { row: r, chatId: getContext()?.getCurrentChatId?.() ?? '' };
+    leafRetain.value = true; leafDeleteOpen.value = true; return;
   } else {
     if (r.imported) {
       if (!confirm('删除这条导入历史?它接管的旧楼层会重新显示并回到待摘要状态;原世界书内容不受影响。')) return;
@@ -1178,6 +1192,11 @@ provide(SUMMARY_CTX, {
       共 {{ pendingFloors.length }} 个未摘楼层,将全部标为番外/不计入记忆。此操作不调用 API,也不删除已有摘要;之后可在对应楼层或摘要总览里单独恢复。
     </ConfirmDialog>
 
+    <ConfirmDialog v-model:open="leafDeleteOpen" title="删除此楼摘要？" confirm-text="删除摘要" tone="danger" @confirm="confirmLeafDelete">
+      该楼带来的自动状态和重点更新会按剩余摘要重新计算；手工或锁定重点保留并提示。包含它的总结也会移除。
+      <label><input v-model="leafRetain" type="checkbox">此楼继续参与记忆，可重新摘要</label>
+      取消勾选会同时标记“不计入记忆”，今后不再自动摘要或更新重点。
+    </ConfirmDialog>
     <!-- 当前状态 -->
     <div v-if="currentTime || memory.state.location" class="bbs-state">
       <div v-if="currentTime" class="bbs-state-item">

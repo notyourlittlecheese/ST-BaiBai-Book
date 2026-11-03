@@ -71,6 +71,8 @@ function sourceLabel(hit: VecHit, selfScope: string | null): string {
 function windowLeafIds(chat: STMessage[]): string[] {
   const keepStart = resolveKeepStart(chat);
   const ids: string[] = [];
+  // Exclude omitted leaves immediately, even before asynchronous index reconciliation finishes.
+  for (const m of chat) if (m.extra?.bbs_omit && getLeaf(m)) ids.push(getLeaf(m)!.id);
   for (let i = keepStart; i < chat.length; i++) {
     if (chat[i]?.extra?.bbs_omit) continue;
     if (leafValid(chat[i])) ids.push(getLeaf(chat[i])!.id);

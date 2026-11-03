@@ -576,9 +576,11 @@ function deleteTag(tag: Tag) {
 /* —— 整楼操作 —— */
 // 删除摘要走行内两步确认(面板嵌在 #chat 滚动容器 + 每楼独立 shadow,行内比 Teleport 弹窗更稳、更贴合紧凑面板)
 const confirmingDelete = ref(false);
+const retainForMemory = ref(true);
 function askDelete() {
   if (busy.value) return;
   confirmingDelete.value = true;
+  retainForMemory.value = true;
 }
 function cancelDelete() {
   confirmingDelete.value = false;
@@ -588,6 +590,7 @@ async function removeLeaf() {
   busy.value = true;
   try {
     deleteLeafAt(props.floor);
+    if (!retainForMemory.value) await setFloorOmit(props.floor, true);
     editKey.value = null;
     confirmingDelete.value = false;
   } finally {
@@ -857,6 +860,7 @@ const groups = computed(() => [
             <div v-if="leaf && !omit" class="bbs-fp-footer">
               <template v-if="confirmingDelete">
                 <span class="bbs-fp-confirm-text">删除此楼摘要?</span>
+                <label><input v-model="retainForMemory" type="checkbox">此楼继续参与记忆，可重新摘要</label>
                 <button class="bbs-fp-confirm-cancel" type="button" :disabled="busy" @click="cancelDelete">取消</button>
                 <button class="bbs-fp-confirm-ok" type="button" :disabled="busy" @click="removeLeaf">
                   <Icon name="trash" />删除

@@ -21,6 +21,8 @@ function setup(mode: 'strict' | 'count' | 'range' = 'strict') {
     let generationGate = null, busy = false, currentRun = null, currentRunAbort = null;
     let singleRunBusyOwner = null, floorBackfillOwnerRunId = null;
     const engineState = { running: false, cancelling: false, lastError: '' };
+    const anchors = { running: false };
+    const beginAnchorBatch = () => {}, endAnchorBatch = () => {};
     const floorBackfillState = { running: false, floor: null, chatId: '' };
     const engineActiveHere = () => true, apiSettings = { autoSummaryEnabled: true };
     const getContext = () => state.ctx;
