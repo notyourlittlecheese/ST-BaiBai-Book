@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { anchors, syncAnchors, saveAnchors, anchorEntries, anchorText, newEntry, manualEntry, setEntryPolicy, policy, sources, activeSources, orphanedManual, MODULES, LABELS, FIELDS, ENUMS, render, type Entry, type Module, type Control } from '@/memory/anchors';
 import { derivedMeta } from '@/memory/store';
-import { initializeAnchors, engineState } from '@/memory/engine';
+import { initializeAnchors, engineState, anchorInitialization, stopAnchorInitialization, discardAnchorInitialization } from '@/memory/engine';
 import { refreshInjection } from '@/memory/inject';
 syncAnchors();
 const error = ref('');
-const start = ref(0); const end = ref(Math.max(0, ...sources().map(s => s.floor)));
+const sameTask = computed(() => anchorInitialization.chatId === anchors.chatId);
+const start = ref(sameTask.value ? anchorInitialization.start : 0);
+const end = ref(sameTask.value ? anchorInitialization.end : Math.max(0, ...sources().map(s => s.floor)));
+const resumeSelected = computed(() => sameTask.value && anchorInitialization.canResume && start.value === anchorInitialization.start && end.value === anchorInitialization.end);
 const edit = ref<Entry | null>(null);
 const insertion = ref('__keep');
 const linked = ref<Entry | null>(null);
@@ -22,9 +25,7 @@ const total = computed(() => { void derivedMeta.rev; return anchorText(); });
 const estimate = (s: string) => Math.ceil([...s].reduce((n, c) => n + (/[^\x00-\x7F]/.test(c) ? 1 : 0.25), 0));
 const fixedKeys = computed(() => selectedModule.value === 'current_scene' ? ['Meeting', 'Start', 'Progress', 'CurrentActivity', 'OpenIssue'] : ['Date', 'Stage', 'UserToChar', 'CharToUser', 'TrustUserToChar', 'TrustCharToUser', 'Boundary']);
 const linkedEntries = computed(() => entries.value.filter(e => e.ref === linked.value?.id));
-let controller: AbortController | undefined;
-onUnmounted(() => controller?.abort());
-watch(() => anchors.chatId, () => { controller?.abort(); edit.value = null; linked.value = null; deleteTarget.value = null; });
+watch(() => anchors.chatId, () => { edit.value = null; linked.value = null; deleteTarget.value = null; });
 watch(selectedModule, () => { selectedKey.value = fixedKeys.value[0]; });
 function save() { saveAnchors(); refreshInjection(); }
 function setting(e: Entry, control: Control, visible: boolean) { setEntryPolicy(e, control, visible); refreshInjection(); }
@@ -73,10 +74,8 @@ function ordered(module: Module) {
 async function initialize() {
   error.value = '';
   if (!Number.isInteger(start.value) || !Number.isInteger(end.value) || start.value < 0 || end.value < start.value) { error.value = '请填写有效的起止楼号'; return; }
-  controller = new AbortController();
-  try { await initializeAnchors(start.value, end.value, controller.signal); }
+  try { await initializeAnchors(start.value, end.value); }
   catch (e) { error.value = e instanceof Error ? e.message : String(e); }
-  finally { controller = undefined; }
 }
 </script>
 <template>
@@ -93,11 +92,18 @@ async function initialize() {
     <p v-if="error || anchors.error" role="alert">{{ error || anchors.error }}</p>
     <button v-if="anchors.pending.length" type="button" @click="anchors.reviewOpen = true">审核 {{ anchors.pending.length }} 项更新</button>
     <details><summary>从已校对摘要初始化／补充</summary>
-      <p>使用摘要副 API 渠道池；每批一次独立请求，会产生费用。全部完成后统一审核，中途停止不写入半成品。证据只保留到本次审核结束，刷新页面后待审核提案不会保留。</p>
+      <p>读取有效单楼摘要（不换成高层总结），每批最多12条、约1.2万字符，连同前批累积结果交给摘要渠道池。全部完成后统一审核。API返回成功不等于提案校验成功。</p>
+      <p>切换插件页或关闭面板不会停止任务。失败／停止后可续跑，已完成批次不重复请求；未完成批次重试仍会产生费用。刷新酒馆页面会丢失临时进度和待审核提案。</p>
       <label>起始楼 <input v-model.number="start" type="number" min="0" :disabled="busy"></label>
       <label>结束楼 <input v-model.number="end" type="number" min="0" :disabled="busy"></label>
-      <button type="button" :disabled="busy || !anchors.data.enabled" @click="initialize">调用 API 补充重点</button>
-      <button v-if="anchors.running" type="button" @click="controller?.abort()">停止</button><p>{{ anchors.progress }}</p>
+      <button type="button" :disabled="busy || !anchors.data.enabled" @click="initialize">{{ resumeSelected ? '继续初始化（保留已完成批次）' : '调用 API 补充重点（新任务）' }}</button>
+      <button v-if="anchors.running" type="button" @click="stopAnchorInitialization">停止</button>
+      <button v-if="sameTask && anchorInitialization.canResume" type="button" :disabled="busy" @click="discardAnchorInitialization(); error = ''">清除本次临时进度</button>
+      <template v-if="sameTask">
+        <p>范围 #{{ anchorInitialization.start }}–#{{ anchorInitialization.end }}：{{ anchorInitialization.status }} · 已完成 {{ anchorInitialization.done }}/{{ anchorInitialization.total }} 批</p>
+        <p v-if="anchorInitialization.error" role="alert">{{ anchorInitialization.error }}</p>
+        <details v-if="anchorInitialization.error && anchorInitialization.raw"><summary>失败批次的 API 返回（仅本次会话）</summary><pre>{{ anchorInitialization.raw }}</pre></details>
+      </template>
     </details>
     <fieldset :disabled="busy"><legend>手动添加／修改字段</legend>
       <select v-model="selectedModule"><option v-for="m in MODULES" :key="m" :value="m">{{ LABELS[m] }}</option></select>

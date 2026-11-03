@@ -3,7 +3,7 @@ vi.mock('@/memory/vector', () => ({ scheduleVectorIndex: vi.fn() }));
 import { anchors, syncAnchors, receiveAnchors, anchorEntries, settlePending, reviewBeforeGeneration, cancelAnchorReview, parseAnchorProposal, beginAnchorBatch, endAnchorBatch, setEntryPolicy, anchorText, anchorPrompt } from './index';
 import { recomputeDerived } from '../store';
 import { deleteLeafAt } from '../apply';
-import { setFloorOmit, initializeAnchors, handleGenerationIntercept } from '../engine';
+import { setFloorOmit, initializeAnchors, handleGenerationIntercept, discardAnchorInitialization, anchorInitialization, stopAnchorInitialization } from '../engine';
 import { apiSettings } from '@/api/settings';
 
 function setup() {
@@ -20,7 +20,7 @@ const relation = () => ({ changes: [
   { module: 'long_term_timeline', id: 'new1', value: '双方因晚归争执', evidence: '发生争执' },
   { module: 'relationship_status', key: 'UserToChar', value: '委屈', ref: 'new1', evidence: '我很委屈。', evidenceFloor: 0 },
 ] });
-afterEach(() => { cancelAnchorReview(); endAnchorBatch(false); vi.unstubAllGlobals(); });
+afterEach(() => { cancelAnchorReview(); endAnchorBatch(false); discardAnchorInitialization(); vi.unstubAllGlobals(); });
 describe('highlight validation, settlement and real source integration', () => {
   it('AUTO scene writes without pending evidence and deleting summary rolls it back', () => {
     const ctx = setup(); receiveAnchors(scene(), [1]);
@@ -129,6 +129,14 @@ describe('highlight validation, settlement and real source integration', () => {
     ctx.generateRaw.mockResolvedValueOnce(JSON.stringify({ anchors: scene('中间状态') })).mockResolvedValueOnce('bad json');
     await expect(initializeAnchors(0, 26)).rejects.toThrow();
     expect(anchorEntries()).toHaveLength(0); expect(anchors.pending).toHaveLength(0); expect(anchors.running).toBe(false);
+    expect(anchorInitialization.done).toBe(1);
+    expect(anchorInitialization.error).toContain('2/3');
+    expect(anchorInitialization.raw).toBe('bad json');
+    ctx.generateRaw.mockResolvedValue(JSON.stringify({ anchors: scene('最终状态') }));
+    await initializeAnchors(0, 26);
+    expect(ctx.generateRaw).toHaveBeenCalledTimes(4); // 1 successful + 1 failed + only 2 remaining
+    expect(anchors.pending.find(p => p.event.entry.key === 'CurrentActivity')?.event.entry.value).toBe('最终状态');
+    expect(anchorInitialization.done).toBe(3);
   });
   it('aborted initialization discards a late host response', async () => {
     const ctx = setup(); let finish!: (text: string) => void;
@@ -138,6 +146,24 @@ describe('highlight validation, settlement and real source integration', () => {
     ctrl.abort(); finish(JSON.stringify({ anchors: scene() }));
     await expect(work).rejects.toThrow();
     expect(anchorEntries()).toHaveLength(0); expect(anchors.pending).toHaveLength(0);
+  });
+  it('shared stop control cancels a task even without the original page controller', async () => {
+    const ctx = setup(); let finish!: (text: string) => void;
+    ctx.generateRaw.mockImplementation(() => new Promise(r => { finish = r; }));
+    const work = initializeAnchors(0, 1);
+    await vi.waitFor(() => expect(ctx.generateRaw).toHaveBeenCalledTimes(1));
+    stopAnchorInitialization();
+    await expect(work).rejects.toThrow('已停止');
+    expect(anchorInitialization.canResume).toBe(true);
+    finish(JSON.stringify({ anchors: scene() }));
+    expect(anchors.pending).toHaveLength(0);
+  });
+  it('resume refuses changed sources before spending another API request', async () => {
+    const ctx = setup(); ctx.generateRaw.mockResolvedValue('bad json');
+    await expect(initializeAnchors(0, 1)).rejects.toThrow();
+    ctx.chat[1].extra.bbs_leaf.text = '修订后的摘要';
+    await expect(initializeAnchors(0, 1)).rejects.toThrow('来源摘要');
+    expect(ctx.generateRaw).toHaveBeenCalledTimes(1);
   });
   it('malformed optional anchor output does not repeat an otherwise successful summary request', async () => {
     const ctx = setup(); delete ctx.chat[1].extra.bbs_leaf;

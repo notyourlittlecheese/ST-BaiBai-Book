@@ -136,7 +136,7 @@ function save() {
     <template v-else>
       <p class="bbs-field-hint">最近 100 次插件请求；模型为请求名称。成功表示收到响应，摘要是否可用仍以解析结果为准。仅本次会话保存。</p>
       <article v-for="call in calls" :key="call.id" class="bbs-inspection-record">
-        <strong>{{ call.task }} · {{ call.status }}</strong>
+        <strong>{{ call.task }} · {{ call.status === '成功' ? '接口返回成功' : call.status }}</strong>
         <div>{{ call.channel }} · {{ call.model }}</div>
         <div v-if="call.responseModel">接口返回模型：{{ call.responseModel }}</div>
         <small>{{ new Date(call.at).toLocaleTimeString() }} · {{ (call.duration / 1000).toFixed(1) }} 秒</small>

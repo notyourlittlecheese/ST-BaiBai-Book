@@ -23,6 +23,20 @@ import { anchors, anchorPrompt, receiveAnchors, parseAnchorProposal, sources as 
 import { replay as replayAnchors, type Proposal as AnchorProposal } from './anchors/model';
 import { beginAnchorBatch, endAnchorBatch, activeSources as anchorActiveSources } from './anchors';
 
+export const anchorInitialization = reactive({ chatId: '', start: 0, end: 0, done: 0, total: 0, status: '', error: '', raw: '', canResume: false });
+let anchorInitController: AbortController | undefined;
+let anchorCheckpoint: {
+  chat: STMessage[] | undefined; chatId: string; revision: number; start: number; end: number;
+  selected: ReturnType<typeof anchorSources>; blocks: ReturnType<typeof anchorSources>[];
+  draft: Data; original: ReturnType<typeof replayAnchors>; collected: Map<string, AnchorProposal>; next: number;
+} | undefined;
+export function stopAnchorInitialization(): void { anchorInitController?.abort(); }
+export function discardAnchorInitialization(): void {
+  if (anchors.running) return;
+  anchorCheckpoint = undefined;
+  Object.assign(anchorInitialization, { canResume: false, error: '', raw: '', done: 0, total: 0, status: '' });
+}
+
 /** Explicit paid initialization, using corrected leaf summaries only. No intermediate state is published. */
 export async function initializeAnchors(start: number, end: number, signal?: AbortSignal): Promise<void> {
   syncAnchors();
@@ -31,16 +45,16 @@ export async function initializeAnchors(start: number, end: number, signal?: Abo
   if (anchors.pending.length) throw new Error('请先处理已有待审核提案');
   const selected = anchorSources().filter(s => s.floor >= start && s.floor <= end);
   if (!selected.length) throw new Error('此范围没有有效单楼摘要');
-  const sender = resolveSender('summary');
-  if ('error' in sender) throw new Error(sender.error);
   const chat = getContext()?.chat;
   const chatId = anchors.chatId;
   const revision = anchors.data.revision;
-  const draft: Data = JSON.parse(JSON.stringify(anchors.data));
-  const original = replayAnchors(draft, anchorActiveSources());
-  const collected = new Map<string, AnchorProposal>();
-  anchors.running = true;
-  try {
+  if (anchorCheckpoint && anchorCheckpoint.chatId === chatId && anchorCheckpoint.start === start && anchorCheckpoint.end === end) {
+    const old = anchorCheckpoint;
+    if (old.chat !== chat || old.revision !== revision || JSON.stringify(old.selected) !== JSON.stringify(selected)) {
+      anchorInitialization.error = '来源摘要或重点设置已改变，不能沿用旧进度。请清除本次进度后重新初始化。';
+      throw new Error(anchorInitialization.error);
+    }
+  } else {
     const blocks: typeof selected[] = [];
     let part: typeof selected = []; let chars = 0;
     for (const s of selected) {
@@ -48,14 +62,34 @@ export async function initializeAnchors(start: number, end: number, signal?: Abo
       part.push(s); chars += s.text.length;
     }
     if (part.length) blocks.push(part);
-    for (let i = 0; i < blocks.length; i++) {
+    const draft: Data = JSON.parse(JSON.stringify(anchors.data));
+    anchorCheckpoint = { chat, chatId, revision, start, end, selected, blocks, draft, original: replayAnchors(draft, anchorActiveSources()), collected: new Map(), next: 0 };
+  }
+  const checkpoint = anchorCheckpoint;
+  const { blocks, draft, original, collected } = checkpoint;
+  const ctrl = new AbortController();
+  const externalSignal = signal;
+  const abort = () => ctrl.abort();
+  externalSignal?.addEventListener('abort', abort, { once: true });
+  if (externalSignal?.aborted) ctrl.abort();
+  signal = ctrl.signal;
+  anchorInitController = ctrl;
+  Object.assign(anchorInitialization, { chatId, start, end, done: checkpoint.next, total: blocks.length, error: '', raw: '', canResume: false });
+  anchors.running = true;
+  let phase = '请求';
+  try {
+    for (let i = checkpoint.next; i < blocks.length; i++) {
       signal?.throwIfAborted();
       anchors.progress = `读取摘要 ${i + 1}/${blocks.length} 批；完成后统一审核`;
+      anchorInitialization.status = `第 ${i + 1}/${blocks.length} 批：请求中`;
+      phase = 'API请求';
       const block = blocks[i];
       const prompt = '根据以下已由用户校对的单楼摘要补充重点记录，仅返回 {"anchors":{...}}。不重新生成摘要。用户原话未知时不要伪造引用。\n'
         + JSON.stringify(block.map(s => ({ floor: s.floor, summary: s.text })))
         + anchorPrompt(block.map(s => s.floor), true, draft);
       // One paid request per block; no implicit retries or per-floor fallback.
+      const sender = resolveSender('summary', `重点初始化 ${i + 1}/${blocks.length}`);
+      if ('error' in sender) throw new Error(sender.error);
       let stop: (() => void) | undefined;
       const request = sender.send([{ role: 'user', content: prompt }], signal);
       const raw = await (signal ? Promise.race([
@@ -67,10 +101,16 @@ export async function initializeAnchors(start: number, end: number, signal?: Abo
         }),
       ]).finally(() => { if (stop) signal.removeEventListener('abort', stop); }) : request);
       signal?.throwIfAborted();
+      anchorInitialization.raw = raw;
+      phase = '来源检查';
       if (getContext()?.chat !== chat || getContext()?.getCurrentChatId?.() !== chatId || anchors.data.revision !== revision) throw new Error('聊天或重点设置已变化，本次补充未保存');
       const active = anchorSources();
       if (selected.some(s => !active.some(a => a.id === s.id && a.text === s.text))) throw new Error('来源摘要已变化，本次补充未保存');
-      const proposals = parseAnchorProposal(extractJsonObject<{ anchors?: unknown }>(raw)?.anchors, block.map(s => s.floor), true, draft);
+      phase = 'JSON解析';
+      anchorInitialization.status = `第 ${i + 1}/${blocks.length} 批：API已返回，正在解析和校验`;
+      const parsed = extractJsonObject<{ anchors?: unknown }>(raw);
+      phase = '重点字段校验';
+      const proposals = parseAnchorProposal(parsed?.anchors, block.map(s => s.floor), true, draft);
       for (const p of proposals) {
         const earlier = collected.get(p.event.entry.id);
         if (earlier) p.event.sources = [...new Map([...earlier.event.sources, ...p.event.sources].map(s => [s.id, s])).values()];
@@ -78,11 +118,28 @@ export async function initializeAnchors(start: number, end: number, signal?: Abo
         collected.set(p.event.entry.id, p);
         draft.events.push({ ...p.event, order: draft.events.length + Date.now() });
       }
+      checkpoint.next = i + 1;
+      anchorInitialization.done = checkpoint.next;
+      anchorInitialization.raw = '';
     }
     anchors.pending = [...collected.values()];
     anchors.reviewOpen = anchors.pending.length > 0;
     anchors.error = '';
-  } finally { anchors.running = false; anchors.progress = ''; }
+    anchorInitialization.status = anchors.pending.length ? '全部完成，等待审核' : '全部完成，没有新的重点变化';
+    anchorInitialization.canResume = false;
+    anchorCheckpoint = undefined;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    anchorInitialization.error = `第 ${checkpoint.next + 1}/${blocks.length} 批${signal.aborted ? '已停止' : ' · ' + phase + '失败'}：${message}。已完成 ${checkpoint.next} 批仍保留在当前页面会话中，尚未写入正式状态。`;
+    anchorInitialization.status = signal.aborted ? '已停止，可继续' : '中断，可继续';
+    anchorInitialization.canResume = true;
+    throw new Error(anchorInitialization.error);
+  } finally {
+    externalSignal?.removeEventListener('abort', abort);
+    if (anchorInitController === ctrl) anchorInitController = undefined;
+    anchors.running = false;
+    anchors.progress = anchorInitialization.status;
+  }
 }
 
 function llmString(v: unknown): string {
@@ -1097,7 +1154,7 @@ async function syncWindowHiddenState(chat: STMessage[]): Promise<void> {
  */
 type SummarySender = { send: (messages: ChatMsg[], signal?: AbortSignal) => Promise<string>; label: string };
 
-function resolveSender(task: TaskType): SummarySender | { error: string } {
+function resolveSender(task: TaskType, activityLabel = task === 'summary' ? '摘要' : '总结'): SummarySender | { error: string } {
   const channels = getChannelsForTask(task);
   if (channels.length) {
     const labels = channels.map(channel => `「${channel.name}」(${channel.model})`);
@@ -1108,7 +1165,7 @@ function resolveSender(task: TaskType): SummarySender | { error: string } {
         for (const channel of channels) {
           if (signal?.aborted) throw new Error('摘要已停止');
           try {
-            return await traceApi(task === 'summary' ? '摘要' : '总结', channel.name, channel.model,
+            return await traceApi(activityLabel, channel.name, channel.model,
               record => requestCompletion(channel, messages, { signal, onResponseModel: model => { record.responseModel = model; } }), signal);
           } catch (e) {
             if (signal?.aborted) throw new Error('摘要已停止');
@@ -1129,7 +1186,7 @@ function resolveSender(task: TaskType): SummarySender | { error: string } {
       if (signal?.aborted) throw new Error('摘要已停止');
       const identity = await mainApiIdentity();
       if (signal?.aborted) throw new Error('摘要已停止');
-      const text = await traceApi(task === 'summary' ? '摘要' : '总结', identity.channel, identity.model,
+      const text = await traceApi(activityLabel, identity.channel, identity.model,
         () => requestViaMainApi(messages), signal);
       if (signal?.aborted) throw new Error('摘要已停止');
       return text;
@@ -2085,7 +2142,7 @@ export function bindEngine(): void {
 
   // Only the awaited generation interceptor may start automatic work.
   // Starting requests on render events bypasses failure/cancellation guarantees.
-  if (et.CHAT_CHANGED) es.on(et.CHAT_CHANGED, () => cancelCurrentSummary());
+  if (et.CHAT_CHANGED) es.on(et.CHAT_CHANGED, () => { cancelCurrentSummary(); stopAnchorInitialization(); });
 
   // 以下三事件只让数据/UI 跟随,不主动生成摘要。
   if (et.MESSAGE_SWIPED) es.on(et.MESSAGE_SWIPED, () => reactToChatMutation());
