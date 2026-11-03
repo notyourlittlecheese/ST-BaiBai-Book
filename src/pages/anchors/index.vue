@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { anchors, syncAnchors, saveAnchors, anchorEntries, anchorText, newEntry, manualEntry, setEntryPolicy, policy, sources, activeSources, orphanedManual, MODULES, LABELS, FIELDS, ENUMS, render, type Entry, type Module, type Control } from '@/memory/anchors';
-import { derivedMeta } from '@/memory/store';
+import { derivedMeta, memory } from '@/memory/store';
+import { planAnchorHistory, historyPayload, DEFAULT_HISTORY_CHARS } from '@/memory/anchors/history';
 import { initializeAnchors, engineState, anchorInitialization, stopAnchorInitialization, discardAnchorInitialization } from '@/memory/engine';
 import { refreshInjection } from '@/memory/inject';
 syncAnchors();
@@ -9,7 +10,15 @@ const error = ref('');
 const sameTask = computed(() => anchorInitialization.chatId === anchors.chatId);
 const start = ref(sameTask.value ? anchorInitialization.start : 0);
 const end = ref(sameTask.value ? anchorInitialization.end : Math.max(0, ...sources().map(s => s.floor)));
-const resumeSelected = computed(() => sameTask.value && anchorInitialization.canResume && start.value === anchorInitialization.start && end.value === anchorInitialization.end);
+const maxChars = ref(sameTask.value ? anchorInitialization.maxChars : DEFAULT_HISTORY_CHARS);
+const resumeSelected = computed(() => sameTask.value && anchorInitialization.canResume && start.value === anchorInitialization.start && end.value === anchorInitialization.end && maxChars.value === anchorInitialization.maxChars);
+const historyPlan = computed(() => {
+  void derivedMeta.rev;
+  try {
+    const blocks = planAnchorHistory(sources(), memory.summaries, start.value, end.value, maxChars.value);
+    return { count: blocks.length, summaries: blocks.flat().filter(p => p.level > 0).length, leaves: blocks.flat().filter(p => p.level === 0).length, chars: blocks.reduce((n,b) => n + historyPayload(b).length, 0), error: '' };
+  } catch (e) { return { count: 0, summaries: 0, leaves: 0, chars: 0, error: e instanceof Error ? e.message : String(e) }; }
+});
 const edit = ref<Entry | null>(null);
 const insertion = ref('__keep');
 const linked = ref<Entry | null>(null);
@@ -74,7 +83,7 @@ function ordered(module: Module) {
 async function initialize() {
   error.value = '';
   if (!Number.isInteger(start.value) || !Number.isInteger(end.value) || start.value < 0 || end.value < start.value) { error.value = '请填写有效的起止楼号'; return; }
-  try { await initializeAnchors(start.value, end.value); }
+  try { await initializeAnchors(start.value, end.value, undefined, maxChars.value); }
   catch (e) { error.value = e instanceof Error ? e.message : String(e); }
 }
 </script>
@@ -92,11 +101,15 @@ async function initialize() {
     <p v-if="error || anchors.error" role="alert">{{ error || anchors.error }}</p>
     <button v-if="anchors.pending.length" type="button" @click="anchors.reviewOpen = true">审核 {{ anchors.pending.length }} 项更新</button>
     <details><summary>从已校对摘要初始化／补充</summary>
-      <p>读取有效单楼摘要（不换成高层总结），每批最多12条、约1.2万字符，连同前批累积结果交给摘要渠道池。全部完成后统一审核。API返回成功不等于提案校验成功。</p>
+      <p>优先读取完整覆盖所选楼层的最高层总结，其余用单楼摘要补齐，不重复发送。按历史文本总量分批，不限制条数；每批连同累积重点和规则一起请求。全部完成后统一审核。</p>
       <p>切换插件页或关闭面板不会停止任务。失败／停止后可续跑，已完成批次不重复请求；未完成批次重试仍会产生费用。刷新酒馆页面会丢失临时进度和待审核提案。</p>
       <label>起始楼 <input v-model.number="start" type="number" min="0" :disabled="busy"></label>
       <label>结束楼 <input v-model.number="end" type="number" min="0" :disabled="busy"></label>
-      <button type="button" :disabled="busy || !anchors.data.enabled" @click="initialize">{{ resumeSelected ? '继续初始化（保留已完成批次）' : '调用 API 补充重点（新任务）' }}</button>
+      <label>每批历史字符上限 <input v-model.number="maxChars" type="number" min="1000" max="60000" step="1000" :disabled="busy"></label>
+      <p>此上限包含历史文本及其楼号标记，不包含额外的规则和累积重点，也不是 token 数或模型上下文保证。</p>
+      <p v-if="historyPlan.error" role="alert">{{ historyPlan.error }}</p>
+      <p v-else>预计 {{ historyPlan.count }} 批：{{ historyPlan.summaries }} 条总结 + {{ historyPlan.leaves }} 条单楼摘要，历史文本合计 {{ historyPlan.chars }} 字符。</p>
+      <button type="button" :disabled="busy || !anchors.data.enabled || !!historyPlan.error || !historyPlan.count" @click="initialize">{{ resumeSelected ? '继续初始化（保留已完成批次）' : '调用 API 补充重点（新任务）' }}</button>
       <button v-if="anchors.running" type="button" @click="stopAnchorInitialization">停止</button>
       <button v-if="sameTask && anchorInitialization.canResume" type="button" :disabled="busy" @click="discardAnchorInitialization(); error = ''">清除本次临时进度</button>
       <template v-if="sameTask">

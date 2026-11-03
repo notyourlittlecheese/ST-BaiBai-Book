@@ -1,6 +1,7 @@
 import { reactive } from 'vue';
 import { getContext } from '@/st/context';
 import { getLeaf, leafValid } from '../apply';
+import { memory } from '../store';
 import { emptyData, replay, render, policy, validSource, signature, sourceRef, MODULES, FIELDS, ENUMS, type Data, type Entry, type Event, type Module, type Proposal, type Source } from './model';
 export * from './model';
 const KEY = 'bbs_highlight_anchors_v1';
@@ -44,7 +45,7 @@ export function sources(): Source[] {
   });
 }
 export function activeSources(): Source[] {
-  return [...sources(), ...(getContext()?.chat ?? []).flatMap((m, floor) => m.is_user && !m.extra?.bbs_omit ? [{ id: `input:${floor}`, floor, text: m.mes }] : [])];
+  return [...sources(), ...memory.summaries.map(s => ({ id: `summary:${s.id}`, floor: -1, text: s.text })), ...(getContext()?.chat ?? []).flatMap((m, floor) => m.is_user && !m.extra?.bbs_omit ? [{ id: `input:${floor}`, floor, text: m.mes }] : [])];
 }
 export function syncAnchors(): void {
   const ctx = getContext();

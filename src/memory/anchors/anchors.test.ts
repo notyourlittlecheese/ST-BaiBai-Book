@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/memory/vector', () => ({ scheduleVectorIndex: vi.fn() }));
 import { anchors, syncAnchors, receiveAnchors, anchorEntries, settlePending, reviewBeforeGeneration, cancelAnchorReview, parseAnchorProposal, beginAnchorBatch, endAnchorBatch, setEntryPolicy, anchorText, anchorPrompt } from './index';
-import { recomputeDerived } from '../store';
+import { recomputeDerived, memory } from '../store';
 import { deleteLeafAt } from '../apply';
 import { setFloorOmit, initializeAnchors, handleGenerationIntercept, discardAnchorInitialization, anchorInitialization, stopAnchorInitialization } from '../engine';
 import { apiSettings } from '@/api/settings';
 
 function setup() {
+  memory.summaries = [];
   const chat: any[] = [{ is_user: true, mes: '我很委屈。' }, { is_user: false, mes: '发生争执', extra: { bbs_leaf: { id: 'leaf1', text: '用户明确委屈', v: 1, createdAt: 1, delta: {} } } }];
   const ctx = { chat, chatMetadata: {} as Record<string, unknown>, getCurrentChatId: () => 'anchor-test', name1: 'U', name2: 'C', characters: [], saveChat: vi.fn(async () => {}), saveMetadataDebounced: vi.fn(), setExtensionPrompt: vi.fn(), generateRaw: vi.fn(async () => '') };
   vi.stubGlobal('window', { SillyTavern: { getContext: () => ctx } });
@@ -123,9 +124,23 @@ describe('highlight validation, settlement and real source integration', () => {
     expect(anchorEntries()).toHaveLength(0); expect(anchors.pending).toHaveLength(1);
     settlePending(true); expect(anchorEntries()[0].value).toBe('谈话');
   });
+  it('initialization sends the covering summary and tracks it as a rollback dependency', async () => {
+    const ctx = setup();
+    memory.summaries = [{ id: 'comp1', level: 1, childIds: ['leaf1'], text: '高层总结：谈话结束后离开', auto: true, createdAt: 1 }];
+    ctx.generateRaw.mockResolvedValue(JSON.stringify({ anchors: scene('离开') }));
+    await initializeAnchors(0, 1);
+    const request = JSON.stringify(ctx.generateRaw.mock.calls);
+    expect(request).toContain('高层总结：谈话结束后离开');
+    expect(request).not.toContain('用户明确委屈');
+    settlePending(true);
+    expect(anchorEntries()[0].value).toBe('离开');
+    memory.summaries[0].text = '修正总结：仍在谈话';
+    recomputeDerived();
+    expect(anchorEntries()).toHaveLength(0);
+  });
   it('initialization failure in a later block leaves all live state untouched', async () => {
     const ctx = setup();
-    for (let i = 2; i <= 26; i++) ctx.chat.push({ is_user: false, mes: '正文', extra: { bbs_leaf: { id: 'leaf' + i, text: '摘要' + i, v: 1, createdAt: i, delta: {} } } });
+    for (let i = 2; i <= 26; i++) ctx.chat.push({ is_user: false, mes: '正文', extra: { bbs_leaf: { id: 'leaf' + i, text: '摘要' + i + '文'.repeat(1000), v: 1, createdAt: i, delta: {} } } });
     ctx.generateRaw.mockResolvedValueOnce(JSON.stringify({ anchors: scene('中间状态') })).mockResolvedValueOnce('bad json');
     await expect(initializeAnchors(0, 26)).rejects.toThrow();
     expect(anchorEntries()).toHaveLength(0); expect(anchors.pending).toHaveLength(0); expect(anchors.running).toBe(false);

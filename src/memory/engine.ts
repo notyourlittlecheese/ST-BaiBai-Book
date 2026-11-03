@@ -22,12 +22,14 @@ import { traceApi, mainApiIdentity } from '@/api/activity';
 import { anchors, anchorPrompt, receiveAnchors, parseAnchorProposal, sources as anchorSources, syncAnchors, type Data } from './anchors';
 import { replay as replayAnchors, type Proposal as AnchorProposal } from './anchors/model';
 import { beginAnchorBatch, endAnchorBatch, activeSources as anchorActiveSources } from './anchors';
+import { planAnchorHistory, historyPayload, DEFAULT_HISTORY_CHARS, type HistoryPart } from './anchors/history';
+import { sourceRef } from './anchors/model';
 
-export const anchorInitialization = reactive({ chatId: '', start: 0, end: 0, done: 0, total: 0, status: '', error: '', raw: '', canResume: false });
+export const anchorInitialization = reactive({ chatId: '', start: 0, end: 0, maxChars: DEFAULT_HISTORY_CHARS, done: 0, total: 0, status: '', error: '', raw: '', canResume: false });
 let anchorInitController: AbortController | undefined;
 let anchorCheckpoint: {
   chat: STMessage[] | undefined; chatId: string; revision: number; start: number; end: number;
-  selected: ReturnType<typeof anchorSources>; blocks: ReturnType<typeof anchorSources>[];
+  selected: ReturnType<typeof anchorSources>; blocks: HistoryPart[][]; maxChars: number;
   draft: Data; original: ReturnType<typeof replayAnchors>; collected: Map<string, AnchorProposal>; next: number;
 } | undefined;
 export function stopAnchorInitialization(): void { anchorInitController?.abort(); }
@@ -38,32 +40,27 @@ export function discardAnchorInitialization(): void {
 }
 
 /** Explicit paid initialization, using corrected leaf summaries only. No intermediate state is published. */
-export async function initializeAnchors(start: number, end: number, signal?: AbortSignal): Promise<void> {
+export async function initializeAnchors(start: number, end: number, signal?: AbortSignal, maxChars = DEFAULT_HISTORY_CHARS): Promise<void> {
   syncAnchors();
   if (!engineActiveHere() || busy || currentRun || anchors.running) throw new Error('请等待当前摘要任务结束');
   if (!anchors.data.enabled || !anchors.data.updating) throw new Error('请先启用重点提示和随摘要更新');
   if (anchors.pending.length) throw new Error('请先处理已有待审核提案');
   const selected = anchorSources().filter(s => s.floor >= start && s.floor <= end);
   if (!selected.length) throw new Error('此范围没有有效单楼摘要');
+  const planned = planAnchorHistory(anchorSources(), memory.summaries, start, end, maxChars);
   const chat = getContext()?.chat;
   const chatId = anchors.chatId;
   const revision = anchors.data.revision;
-  if (anchorCheckpoint && anchorCheckpoint.chatId === chatId && anchorCheckpoint.start === start && anchorCheckpoint.end === end) {
+  if (anchorCheckpoint && anchorCheckpoint.chatId === chatId && anchorCheckpoint.start === start && anchorCheckpoint.end === end && anchorCheckpoint.maxChars === maxChars) {
     const old = anchorCheckpoint;
-    if (old.chat !== chat || old.revision !== revision || JSON.stringify(old.selected) !== JSON.stringify(selected)) {
+    if (old.chat !== chat || old.revision !== revision || JSON.stringify(old.selected) !== JSON.stringify(selected) || JSON.stringify(old.blocks) !== JSON.stringify(planned)) {
       anchorInitialization.error = '来源摘要或重点设置已改变，不能沿用旧进度。请清除本次进度后重新初始化。';
       throw new Error(anchorInitialization.error);
     }
   } else {
-    const blocks: typeof selected[] = [];
-    let part: typeof selected = []; let chars = 0;
-    for (const s of selected) {
-      if (part.length && (chars + s.text.length > 12000 || part.length >= 12)) { blocks.push(part); part = []; chars = 0; }
-      part.push(s); chars += s.text.length;
-    }
-    if (part.length) blocks.push(part);
+    const blocks = planned;
     const draft: Data = JSON.parse(JSON.stringify(anchors.data));
-    anchorCheckpoint = { chat, chatId, revision, start, end, selected, blocks, draft, original: replayAnchors(draft, anchorActiveSources()), collected: new Map(), next: 0 };
+    anchorCheckpoint = { chat, chatId, revision, start, end, selected, blocks, maxChars, draft, original: replayAnchors(draft, anchorActiveSources()), collected: new Map(), next: 0 };
   }
   const checkpoint = anchorCheckpoint;
   const { blocks, draft, original, collected } = checkpoint;
@@ -74,7 +71,7 @@ export async function initializeAnchors(start: number, end: number, signal?: Abo
   if (externalSignal?.aborted) ctrl.abort();
   signal = ctrl.signal;
   anchorInitController = ctrl;
-  Object.assign(anchorInitialization, { chatId, start, end, done: checkpoint.next, total: blocks.length, error: '', raw: '', canResume: false });
+  Object.assign(anchorInitialization, { chatId, start, end, maxChars, done: checkpoint.next, total: blocks.length, error: '', raw: '', canResume: false });
   anchors.running = true;
   let phase = '请求';
   try {
@@ -84,9 +81,10 @@ export async function initializeAnchors(start: number, end: number, signal?: Abo
       anchorInitialization.status = `第 ${i + 1}/${blocks.length} 批：请求中`;
       phase = 'API请求';
       const block = blocks[i];
-      const prompt = '根据以下已由用户校对的单楼摘要补充重点记录，仅返回 {"anchors":{...}}。不重新生成摘要。用户原话未知时不要伪造引用。\n'
-        + JSON.stringify(block.map(s => ({ floor: s.floor, summary: s.text })))
-        + anchorPrompt(block.map(s => s.floor), true, draft);
+      const floors = [...new Set(block.flatMap(p => p.sources.map(s => s.floor)))];
+      const prompt = '根据以下历史总结与单楼摘要补充重点记录，仅返回 {"anchors":{...}}。level=0为单楼摘要，level>0为覆盖sourceFloors的总结，已去重。不要重新摘要。依据总结的变化请引用对应sourceFloors，不猜测单个事件发生楼层。用户原话未知时不要伪造引用。\n'
+        + historyPayload(block)
+        + anchorPrompt(floors, true, draft);
       // One paid request per block; no implicit retries or per-floor fallback.
       const sender = resolveSender('summary', `重点初始化 ${i + 1}/${blocks.length}`);
       if ('error' in sender) throw new Error(sender.error);
@@ -106,12 +104,17 @@ export async function initializeAnchors(start: number, end: number, signal?: Abo
       if (getContext()?.chat !== chat || getContext()?.getCurrentChatId?.() !== chatId || anchors.data.revision !== revision) throw new Error('聊天或重点设置已变化，本次补充未保存');
       const active = anchorSources();
       if (selected.some(s => !active.some(a => a.id === s.id && a.text === s.text))) throw new Error('来源摘要已变化，本次补充未保存');
+      if (JSON.stringify(planAnchorHistory(active, memory.summaries, start, end, maxChars)) !== JSON.stringify(blocks)) throw new Error('来源总结已变化，本次补充未保存');
       phase = 'JSON解析';
       anchorInitialization.status = `第 ${i + 1}/${blocks.length} 批：API已返回，正在解析和校验`;
       const parsed = extractJsonObject<{ anchors?: unknown }>(raw);
       phase = '重点字段校验';
-      const proposals = parseAnchorProposal(parsed?.anchors, block.map(s => s.floor), true, draft);
+      const proposals = parseAnchorProposal(parsed?.anchors, floors, true, draft);
       for (const p of proposals) {
+        for (const part of block) if (part.summarySource && part.sources.some(s => p.event.sources.some(ref => ref.id === s.id))) {
+          p.event.sources.push(...part.sources.map(sourceRef), sourceRef(part.summarySource));
+        }
+        p.event.sources = [...new Map(p.event.sources.map(s => [s.id, s])).values()];
         const earlier = collected.get(p.event.entry.id);
         if (earlier) p.event.sources = [...new Map([...earlier.event.sources, ...p.event.sources].map(s => [s.id, s])).values()];
         p.before = original.get(p.event.entry.id)?.value ?? null;
