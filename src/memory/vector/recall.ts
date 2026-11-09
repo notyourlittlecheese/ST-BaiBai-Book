@@ -19,7 +19,7 @@ import type { VecHit } from '@/api/baibaoku';
 import { vecSearch } from './store';
 import { CANDIDATE_STRATEGY_VERSION } from './candidates';
 import { getLeaf, leafValid } from '../apply';
-import { MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END } from '../prompts';
+import { MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END, MEMORY_HISTORY_TEMPORAL_RULE } from '../prompts';
 import { embedTexts, encodeFloat32Base64, rerankDocuments } from './embed';
 import { rewriteQuery } from './rewrite';
 import { ensureRecallIndex } from './index';
@@ -456,7 +456,7 @@ function buildRecallText(
   const chunks = [...fullChunks, ...briefChunks];
   if (!chunks.length) return { text: '', tiers };
   // 首尾私密简报框定,避免主模型把召回回忆当成要复述/输出的模板
-  return { text: `${MEMORY_BRIEFING_NOTE}\n[相关回忆]\n${chunks.join('\n\n')}\n${MEMORY_BRIEFING_END}`, tiers };
+  return { text: `${MEMORY_BRIEFING_NOTE}\n${MEMORY_HISTORY_TEMPORAL_RULE}\n[相关回忆]\n${chunks.join('\n\n')}\n${MEMORY_BRIEFING_END}`, tiers };
 }
 
 /**
