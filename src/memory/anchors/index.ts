@@ -74,7 +74,7 @@ export function anchorEntries(): Entry[] { syncAnchors(); return [...replay(anch
 export function anchorText(): string {
   syncAnchors();
   const text = Object.values(render(anchors.data, activeSources())).filter(Boolean).join('\n\n');
-  return text ? `以下为重点提示，只作剧情参考，不要复述格式。USER=${getContext()?.name1 ?? 'USER'}；CHAR=${getContext()?.name2 ?? 'CHAR'}。长期时间线和关系事实记录过去发生过或持续成立的事实，其中伤势、衣着、位置、动作及一时情绪等临时状态不自动延续至当前；当前状态以最近正文与当前场景中较新的明确记录为准，不据历史自行补写恢复或和解过程。短期反应不自动构成长期关系变化，已明确成立的关系变化也不因时间流逝自动撤销。\n${text}` : '';
+  return text ? `以下为重点提示，只作剧情参考，不要复述格式。USER=${getContext()?.name1 ?? 'USER'}；CHAR=${getContext()?.name2 ?? 'CHAR'}。长期时间线和关系事实记录过去发生过或持续成立的事实，其中伤势、衣着、位置、动作及一时情绪等临时状态不自动延续至当前；当前状态以最近正文与当前场景中较新的明确记录为准，不据历史自行补写恢复或和解过程。短期反应不自动构成长期关系变化。事件已明确造成的关系、认知、承诺与边界变化须影响后续选择和反应，直到较新的明确事件改变它们；旧回忆不得让关系退回变化前，气氛缓和不等于问题解决，已明确发生的修复或进展也不得被旧冲突撤销。自然体现已有影响，无需复述旧事，不自行推断未明确建立的长期影响。\n${text}` : '';
 }
 export function orphanedManual(): Event[] {
   const active = activeSources();
