@@ -880,17 +880,16 @@ export async function setFloorOmit(floor: number, on: boolean): Promise<void> {
   if (already === on) return; // 幂等
 
   if (on) {
-    m.extra = { ...(m.extra ?? {}), bbs_omit: true, bbs_omit_hidden: !m.is_system };
-    m.is_system = true;
+    const { bbs_omit_hidden: _legacyHidden, ...rest } = m.extra ?? {};
+    m.extra = { ...rest, bbs_omit: true };
   } else {
-    if (m.extra?.bbs_omit_hidden) m.is_system = false;
     const { bbs_omit: _omit, bbs_omit_hidden: _hidden, ...rest } = m.extra ?? {};
     m.extra = rest;
   }
 
-  // 标记随 chat 文件持久化;派生/注入/隐藏窗口按新口径重算。
+  // 番外只控制记忆参与，不修改正文可见性，也不触发隐藏窗口同步。
   recomputeDerived();
-  await syncHiddenNow(); // 内部据 engineActiveHere/autoSummary 决定是否同步隐藏,并刷新注入
+  refreshInjection();
   scheduleLeafFlush();
   invalidateRecallCache();
   scheduleVectorIndex();
@@ -908,10 +907,9 @@ export async function setFloorsOmit(floors: number[], on: boolean): Promise<numb
     const already = !!m.extra?.bbs_omit;
     if (already === on) continue;
     if (on) {
-      m.extra = { ...(m.extra ?? {}), bbs_omit: true, bbs_omit_hidden: !m.is_system };
-      m.is_system = true;
+      const { bbs_omit_hidden: _legacyHidden, ...rest } = m.extra ?? {};
+      m.extra = { ...rest, bbs_omit: true };
     } else {
-      if (m.extra?.bbs_omit_hidden) m.is_system = false;
       const { bbs_omit: _omit, bbs_omit_hidden: _hidden, ...rest } = m.extra ?? {};
       m.extra = rest;
     }
@@ -921,7 +919,7 @@ export async function setFloorsOmit(floors: number[], on: boolean): Promise<numb
   invalidateRecallCache();
   scheduleVectorIndex();
   recomputeDerived();
-  await syncHiddenNow();
+  refreshInjection();
   scheduleLeafFlush();
   return changed;
 }
@@ -1056,6 +1054,7 @@ export function coalesceRanges(indices: number[]): Array<[number, number]> {
  * 只隐藏已被摘要覆盖的,绝不制造信息黑洞。
  */
 async function syncWindowHiddenState(chat: STMessage[]): Promise<void> {
+  if (!apiSettings.autoHideEnabled) return;
   const keepStart = resolveKeepStart(chat);
   const covered = coveredSet(chat);
   const imported = importedHistoryRanges();
@@ -1067,7 +1066,7 @@ async function syncWindowHiddenState(chat: STMessage[]): Promise<void> {
   for (let i = 0; i < chat.length; i++) {
     const m = chat[i];
     if (!m) continue;
-    if (m.extra?.bbs_omit) { m.is_system = true; continue; }
+    if (m.extra?.bbs_omit) continue; // 番外可见性由用户或其它隐藏插件管理。
     // 用户明确把一段旧剧情交给“导入历史”接管时,整段都隐藏,不再受最近窗口保留数影响,
     // 否则导入正文会与窗口内旧原文重复注入。删除导入节点后会自动走下面的 unhide。
     const shouldHide = covered.has(i) && (i < keepStart || floorInImportedRanges(i, imported));

@@ -3,7 +3,7 @@ vi.mock('@/memory/vector', () => ({ scheduleVectorIndex: vi.fn() }));
 import { anchors, syncAnchors, receiveAnchors, anchorEntries, settlePending, reviewBeforeGeneration, cancelAnchorReview, parseAnchorProposal, beginAnchorBatch, endAnchorBatch, setEntryPolicy, anchorText, anchorPrompt } from './index';
 import { recomputeDerived, memory } from '../store';
 import { deleteLeafAt } from '../apply';
-import { setFloorOmit, initializeAnchors, handleGenerationIntercept, discardAnchorInitialization, anchorInitialization, stopAnchorInitialization } from '../engine';
+import { setFloorOmit, setFloorsOmit, syncHiddenNow, initializeAnchors, handleGenerationIntercept, discardAnchorInitialization, anchorInitialization, stopAnchorInitialization } from '../engine';
 import { apiSettings } from '@/api/settings';
 
 function setup() {
@@ -101,13 +101,46 @@ describe('highlight validation, settlement and real source integration', () => {
     setup(); receiveAnchors(relation(), [1]); const wait = reviewBeforeGeneration();
     cancelAnchorReview(); expect(await wait).toBe(false); expect(anchors.pending).toHaveLength(2);
   });
-  it('omission hides original and removes anchor contribution without API calls, restore is reversible', async () => {
+  it('omission removes anchor contribution without hiding original or calling API, restore is reversible', async () => {
     const ctx = setup(); receiveAnchors(scene(), [1]);
+    ctx.chat[1].is_system = false;
     await setFloorOmit(1, true);
-    expect(ctx.chat[1].is_system).toBe(true); expect(anchorEntries()).toHaveLength(0);
+    expect(ctx.chat[1].is_system).toBe(false); expect(anchorEntries()).toHaveLength(0);
     expect(ctx.generateRaw).not.toHaveBeenCalled();
     await setFloorOmit(1, false);
     expect(ctx.chat[1].is_system).toBe(false); expect(anchorEntries()).toHaveLength(1);
+  });
+  it('batch omission preserves visible and hidden floors and legacy restore never unhides', async () => {
+    const ctx = setup();
+    ctx.chat[0].is_system = false; ctx.chat[1].is_system = true;
+    expect(await setFloorsOmit([0, 1], true)).toBe(2);
+    expect(ctx.chat.map(m => m.is_system)).toEqual([false, true]);
+    expect(ctx.chat[0].extra.bbs_omit_hidden).toBeUndefined();
+    ctx.chat[1].extra.bbs_omit_hidden = true;
+    expect(await setFloorsOmit([0, 1], false)).toBe(2);
+    expect(ctx.chat.map(m => m.is_system)).toEqual([false, true]);
+    expect(ctx.chat[1].extra.bbs_omit_hidden).toBeUndefined();
+    ctx.chat[1].extra.bbs_omit = true; ctx.chat[1].extra.bbs_omit_hidden = true;
+    await setFloorOmit(1, false);
+    expect(ctx.chat[1].is_system).toBe(true);
+    expect(ctx.generateRaw).not.toHaveBeenCalled();
+  });
+  it('hidden sync never forces an omitted floor hidden even when automatic management is on', async () => {
+    const ctx = setup();
+    await setFloorOmit(1, true);
+    ctx.chat[1].is_system = false; // 用户或 hide 插件重新显示该楼。
+    ctx.chat[1].extra.bbs_omit_hidden = true; // 兼容旧版本遗留标记。
+    apiSettings.autoHideEnabled = true;
+    await syncHiddenNow(true);
+    expect(ctx.chat[1].is_system).toBe(false);
+    expect(ctx.chat[1].extra.bbs_omit).toBe(true);
+  });
+  it('disabled automatic management preserves even previously BBS-hidden floors during forced sync', async () => {
+    const ctx = setup();
+    ctx.chat[0].is_system = true; ctx.chat[0].extra = { bbs_hidden: true };
+    ctx.chat[1].is_system = false; ctx.chat[1].extra.bbs_omit = true;
+    await syncHiddenNow(true);
+    expect(ctx.chat.map(m => m.is_system)).toEqual([true, false]);
   });
   it('source edits invalidate pending evidence before it can be accepted', () => {
     const ctx = setup(); receiveAnchors(relation(), [1]);
